@@ -1,9 +1,10 @@
 {
   "name": "@xapiforge/core",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "description": "框架无关的公共网络库（fetch 封装、拦截器、token 单飞刷新、业务异常统一）",
   "type": "module",
+  "license": "MIT",
   "main": "./dist/index.js",
   "types": "./src/index.ts",
   "exports": {
@@ -16,6 +17,18 @@
   "files": [
     "dist"
   ],
+  "publishConfig": {
+    "access": "public",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js",
+        "default": "./dist/index.js"
+      }
+    }
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.type-tests.json --noEmit",

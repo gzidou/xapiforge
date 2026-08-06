@@ -1,0 +1,14 @@
+# Copy to .npmrc only when you need a project-local registry override.
+# Do not commit real tokens.
+
+# Public npm registry:
+# registry=https://registry.npmjs.org/
+# @xapiforge:registry=https://registry.npmjs.org/
+
+# Local Verdaccio-style registry:
+# registry=http://localhost:4873/
+# @xapiforge:registry=http://localhost:4873/
+
+# Token examples. Keep actual values outside Git:
+# //registry.npmjs.org/:_authToken=${NPM_TOKEN}
+# //localhost:4873/:_authToken=${LOCAL_NPM_TOKEN}

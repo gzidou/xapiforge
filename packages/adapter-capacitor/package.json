@@ -1,9 +1,10 @@
 {
   "name": "@xapiforge/adapter-capacitor",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "description": "Ionic Capacitor adapter：@capacitor/preferences / secure-storage 实现的 TokenStore（peer 依赖需用户自行安装）",
   "type": "module",
+  "license": "MIT",
   "main": "./dist/index.js",
   "types": "./src/index.ts",
   "exports": {
@@ -16,6 +17,18 @@
   "files": [
     "dist"
   ],
+  "publishConfig": {
+    "access": "public",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js",
+        "default": "./dist/index.js"
+      }
+    }
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",

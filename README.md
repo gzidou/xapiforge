@@ -49,6 +49,7 @@ See the [browser integration guide](./docs/getting-started/browser.md) for a ful
 | [Getting Started](./docs/getting-started/browser.md) | Integrators | Step-by-step integration                                           |
 | [Guides](./docs/guides/auth.md)                      | Developers  | Auth / middleware / download / error handling / vConsole debugging |
 | [Internals](./docs/internals/architecture-v0.2.md)   | Maintainers | Architecture / scenarios / backend protocols                       |
+| [Publishing](./docs/internals/publishing.md)         | Maintainers | Manual npm/local-registry publishing runbook                       |
 
 Local docs: `pnpm docs:dev` → http://localhost:5174
 
@@ -60,6 +61,10 @@ pnpm lint            # ESLint strict mode
 pnpm format:check    # Prettier check
 pnpm test:scenarios  # library-level scenario tests
 pnpm test:demo-app   # browser-level scenario regression (requires mock + demo-app dev)
+pnpm publish:check   # pre-publish verification gate
+pnpm publish:dry-run # npm publish dry-run
+pnpm publish:local   # publish to local npm registry (default http://localhost:4873)
+pnpm publish:npm     # publish to public npm registry
 pnpm mock            # start local mock-server (port 8787)
 pnpm docs:dev        # VitePress dev server
 pnpm docs:build      # VitePress production build

@@ -89,6 +89,7 @@ export default withMermaid(
               { text: "行为合同表", link: "/internals/behavior-contract" },
               { text: "场景清单", link: "/internals/scenarios" },
               { text: "验证指南", link: "/internals/validation" },
+              { text: "发布手册", link: "/internals/publishing" },
               { text: "后端协议库", link: "/internals/backend-protocols" },
               { text: "Stream 设计储备", link: "/internals/stream-design" },
               { text: "ABP Swagger 已知坑", link: "/internals/swagger-pitfalls" },
