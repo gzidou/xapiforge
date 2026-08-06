@@ -1,6 +1,6 @@
 {
   "name": "@xapiforge/adapter-capacitor",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": false,
   "description": "Ionic Capacitor adapter：@capacitor/preferences / secure-storage 实现的 TokenStore（peer 依赖需用户自行安装）",
   "type": "module",

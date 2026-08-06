@@ -1,6 +1,6 @@
 {
   "name": "@xapiforge/genapi",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": false,
   "description": "swagger.json → TS API 客户端生成器（基于 openapi-typescript）。通用工具，业务项目自己配 xapiforge.config.ts。",
   "type": "module",
@@ -36,6 +36,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "pnpm build && node --test test/*.test.js",
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {

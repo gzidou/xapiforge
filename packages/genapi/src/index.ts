@@ -31,9 +31,10 @@
 import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
 import { readFileSync, existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { execSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
+import { pathToFileURL } from "node:url";
+import openapiTS, { astToString } from "openapi-typescript";
 
 // ---------- 语义类型 ----------
 
@@ -264,7 +265,7 @@ export async function generate(opts: GenerateOptions): Promise<GenerateResult> {
     // Hook 2：transformSwagger（不传 hook 时直接用原文件）
     const inputFile = await applyTransformSwagger(swaggerFile, svc.name, hooks, ctx);
     try {
-      runOpenapiTypescript(inputFile, typeFile);
+      await runOpenapiTypescript(inputFile, typeFile);
     } finally {
       // 如果 hook 写了临时文件，删除（原文件不动）
       if (inputFile !== swaggerFile) {
@@ -337,12 +338,11 @@ export async function generate(opts: GenerateOptions): Promise<GenerateResult> {
 /**
  * 跑 openapi-typescript 生成 types.ts。
  */
-function runOpenapiTypescript(inputFile: string, outputFile: string): void {
-  // 用 npx 而非 pnpm exec —— npx 随 npm 内置，pnpm / yarn / npm 项目都能用
-  // stdio: "inherit" 让 openapi-typescript 的错误输出直接到终端，方便排查
-  execSync(`npx --no-install openapi-typescript "${inputFile}" -o "${outputFile}"`, {
-    stdio: "inherit",
-  });
+async function runOpenapiTypescript(inputFile: string, outputFile: string): Promise<void> {
+  // 直接调用依赖的程序 API，不依赖消费者项目是否把传递依赖的 bin 提升到
+  // node_modules/.bin。这样 npm、pnpm（含 isolated linker）和 yarn 项目行为一致。
+  const ast = await openapiTS(pathToFileURL(inputFile));
+  await writeFile(outputFile, astToString(ast), "utf8");
 }
 
 /**

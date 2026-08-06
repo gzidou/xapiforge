@@ -1,6 +1,6 @@
 {
   "name": "@xapiforge/vconsole-debug",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": false,
   "description": "框架无关的 vConsole 业务调试面板，支持诊断信息、Storage 快照和安全调试动作",
   "type": "module",

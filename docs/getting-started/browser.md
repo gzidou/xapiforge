@@ -1,398 +1,368 @@
 # 浏览器应用接入
 
-> 本文档以 Vue 3 + Vite 为例，展示从零接入 `@xapiforge/core` 的完整步骤。React / 其他框架步骤相同，仅入口文件写法不同。
+本文以 Vue 3 + Vite 为例，先完成一个最小可运行请求，再按需增加登录、Token 刷新和业务 middleware。React 或其他浏览器框架使用相同的客户端初始化方式。
 
 ## 前置条件
 
 - Node.js >= 20.19
 - pnpm >= 9
-- 后端已提供 swagger.json（OpenAPI 3.x）
-- 你的项目已初始化（`pnpm create vite` 或等价方式）
+- 一个 OpenAPI 3.x `swagger.json`
+- 已初始化的前端项目，例如 `pnpm create vue@latest`
 
-## 架构概览
+## 最短接入路径
 
-```text
-┌─────────────── 你的应用 ───────────────┐
-│  业务代码（api.base.GET(...)）          │
-├────────────────────────────────────────┤
-│  @xapiforge/core                         │
-│  ├─ createNet（工厂，封装 openapi-fetch）│
-│  ├─ AuthService（token / refresh / 401）│
-│  ├─ HttpClient（纯 HTTP，给 AuthApi 用） │
-│  └─ middleware 链（auth + retry + httpError）│
-├────────────────────────────────────────┤
-│  @xapiforge/adapter-browser         │
-│  └─ localStorageStore（token 存储）     │
-├────────────────────────────────────────┤
-│  @xapiforge/genapi (含 xapiforge-fetch CLI) │
-│  └─ swagger.json → TS API 客户端生成    │
-└────────────────────────────────────────┘
-```
-
-## 步骤 1：安装依赖
-
-在你的应用项目里：
+### 1. 安装依赖
 
 ```bash
 pnpm add @xapiforge/core @xapiforge/adapter-browser
-pnpm add -D @xapiforge/genapi openapi-fetch
+pnpm add -D @xapiforge/genapi
 ```
 
-> `@xapiforge/*` packages are published to npm. If you're working inside this monorepo, use `workspace:*` instead.
+如果正在验证本地 npm registry，可以显式指定地址：
 
-## 步骤 2：配置 xapiforge.config.ts
+```bash
+pnpm add @xapiforge/core @xapiforge/adapter-browser --registry http://localhost:4873
+pnpm add -D @xapiforge/genapi --registry http://localhost:4873
+```
 
-在项目根目录创建 `xapiforge.config.ts`：
+使用者不需要单独安装 `openapi-typescript`。它是 `@xapiforge/genapi` 的内部依赖。
+
+### 2. 创建 xapiforge.config.ts
+
+在应用根目录创建 `xapiforge.config.ts`：
 
 ```typescript
 import { defineConfig } from "@xapiforge/genapi";
 
 export default defineConfig({
-  // swagger.json 下载路径（后端默认通常是 /swagger/v1/swagger.json）
   defaultPath: "/swagger/v1/swagger.json",
   timeoutMs: 15_000,
-  // swagger.json 落盘目录
   outputDir: "swagger",
-  // API 客户端生成目录
   genOutputDir: "src/api",
-  // offline: 用本地 swagger.json（不连后端）
-  // online:  连后端下载
   mode: "online",
   projects: [
     {
-      name: "myapp", // 项目 ID（英文短码，作目录名）
-      displayName: "我的应用", // 中文全称（日志展示用）
-      baseHost: "http://localhost:7001", // 后端地址
-      services: [
-        { name: "base", displayName: "基础服务", port: 7001 },
-        { name: "file", displayName: "文件服务", port: 7002 }
-      ]
+      name: "myapp",
+      displayName: "My Application",
+      baseHost: "http://localhost:7001",
+      services: [{ name: "base", displayName: "Base API", port: 7001 }]
     }
   ]
 });
 ```
 
-**字段说明**：
+字段说明：
 
-| 字段                  | 必填 | 说明                                                |
-| --------------------- | ---- | --------------------------------------------------- |
-| `name`                | ✓    | 项目 ID / 目录名（英文短码）                        |
-| `displayName`         | ✓    | 中文全称                                            |
-| `baseHost`            | ✓    | 后端主机，不带尾部 `/`                              |
-| `services[].name`     | ✓    | 服务 ID / 文件名                                    |
-| `services[].port`     | ✓    | 端口                                                |
-| `services[].path`     | ×    | 覆盖 `defaultPath`（某些微服务 swagger 路径不同）   |
-| `services[].baseHost` | ×    | 覆盖 `project.baseHost`（服务部署在另一台机器时用） |
+| 字段                  | 必填 | 说明                                        |
+| --------------------- | ---- | ------------------------------------------- |
+| `name`                | 是   | 项目 ID，同时作为目录名，建议使用英文短码   |
+| `displayName`         | 是   | 日志中展示的名称                            |
+| `baseHost`            | 是   | 后端主机，不带末尾 `/`                      |
+| `services[].name`     | 是   | 服务 ID，同时作为 swagger 文件名            |
+| `services[].port`     | 是   | 服务端口                                    |
+| `services[].path`     | 否   | 覆盖项目的 `defaultPath`                    |
+| `services[].baseHost` | 否   | 服务部署在其他主机时，覆盖项目的 `baseHost` |
 
-## 步骤 3：下载 swagger.json + 生成 API 客户端
+`mode` 有两种用途：
 
-在 `package.json` 加脚本：
+- `online`：`xapiforge-fetch` 从后端下载 swagger.json。
+- `offline`：跳过网络下载，直接使用 `swagger/<project>/<service>.json`。
+
+例如上面的 `myapp/base` 在离线模式下对应：
+
+```text
+swagger/myapp/base.json
+```
+
+### 3. 添加生成命令
+
+在应用的 `package.json` 中加入：
 
 ```json
 {
   "scripts": {
     "download-swagger": "xapiforge-fetch",
-    "generate:api": "xapiforge demo"
+    "generate:api": "xapiforge"
   }
 }
 ```
 
-执行：
+下载并生成：
 
 ```bash
-# 1. 下载 swagger.json 到 swagger/myapp/*.json
 pnpm download-swagger
-
-# 2. 生成 TS API 客户端到 src/api/myapp/
 pnpm generate:api myapp
 ```
 
-生成产物（gitignored，每次重新生成）：
+生成结果：
 
 ```text
 src/api/myapp/
-├── index.ts          # createXxxClient() 工厂 + 强类型 client
-├── api-types.ts      # 路径 / 参数 / 响应的聚合类型
+├── index.ts
+├── api-types.ts
 └── types/
-    ├── base.ts       # 各 service 的 schema 类型
-    └── file.ts
+    └── base.ts
 ```
 
-## 步骤 4：写 AuthApi（登录 / 刷新 token）
+`index.ts` 会导出 `createMyappClient`。生成目录可以加入 Git，也可以在 CI 或构建前重新生成；团队应选择一种方式并保持一致。
 
-`AuthApi` 必须用 `HttpClient`（纯 HTTP），**不能**用 `createNet`。
+### 4. 初始化客户端
 
-原因：`createNet` 会注入 auth middleware（自动加 token + 401 刷新），但登录 / 刷新端点本身就是鉴权端点，走 middleware 会死循环。
+创建 `src/api.ts`：
 
 ```typescript
-// src/AuthApi.ts
-import { NetworkError } from "@xapiforge/core";
-import type { HttpClient } from "@xapiforge/core";
+import { AuthService } from "@xapiforge/core";
+import { localStorageStore } from "@xapiforge/adapter-browser";
+import { createMyappClient } from "./api/myapp/index.js";
 
-export interface AuthPojo {
-  token: string;
-  refreshToken?: string;
-  tokenType: string;
-  expiresIn: number;
-}
+const BASE_URL = "http://localhost:7001";
 
-interface OAuth2TokenResponse {
+const authService = new AuthService({
+  tokenStore: localStorageStore("myapp_access_token"),
+  authRefresher: {
+    async refresh() {
+      // 最小示例尚未接入刷新端点。生产项目在下文实现真正的刷新逻辑。
+      throw new Error("token refresh is not configured");
+    }
+  },
+  onAuthFailed() {
+    // 生产项目通常在这里跳转登录页。
+  }
+});
+
+export const api = createMyappClient({
+  baseURL: BASE_URL,
+  authService
+});
+```
+
+如果接口不需要鉴权，TokenStore 中保持为空即可；客户端不会添加 `Authorization`。生成客户端仍要求传入 `AuthService`，以保证需要鉴权时可以直接启用同一套行为。
+
+### 5. 发出第一个强类型请求
+
+在 Vue 组件中直接使用：
+
+```vue
+<script setup lang="ts">
+import { onMounted, ref } from "vue";
+import { api } from "./api";
+
+const result = ref("loading");
+
+onMounted(async () => {
+  const { data } = await api.base.GET("/api/health");
+  result.value = JSON.stringify(data);
+});
+</script>
+
+<template>
+  <pre>{{ result }}</pre>
+</template>
+```
+
+这里的 service 名 `base` 和路径 `/api/health` 都来自 swagger.json。路径、参数或请求体写错时，TypeScript 会在构建阶段报错。
+
+到这里，最小接入已经完成。
+
+## 生产环境增强
+
+### 登录后保存 Token
+
+登录端点本身不要通过生成客户端调用。生成客户端包含鉴权和 401 刷新 middleware，登录或刷新再次经过它可能造成递归。
+
+使用纯 HTTP 的 `HttpClient`：
+
+```typescript
+import { HttpClient } from "@xapiforge/core";
+
+const http = new HttpClient({ baseURL: "http://localhost:7001" });
+
+interface TokenResponse {
   access_token: string;
   refresh_token?: string;
-  token_type: string;
-  expires_in: number;
 }
 
-export class AuthLoginError extends Error {
-  constructor(
-    message: string,
-    readonly oauth2?: { error: string; error_description?: string }
-  ) {
-    super(message);
-    this.name = "AuthLoginError";
-  }
-}
+export async function login(username: string, password: string): Promise<void> {
+  const body = new URLSearchParams({
+    grant_type: "password",
+    client_id: "web_app",
+    scope: "openid profile offline_access",
+    username,
+    password
+  }).toString();
 
-export class AuthApi {
-  constructor(
-    private readonly http: HttpClient,
-    private readonly config: {
-      tokenUrl: string; // 如 "/connect/token"
-      clientId: string; // 如 "Infrastructure_Web"
-      scope: string; // 如 "offline_access Infrastructure"
-    }
-  ) {}
+  const response = await http.request({
+    method: "POST",
+    path: "/oauth/token",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body
+  });
 
-  async login(username: string, password: string, tenant?: string): Promise<AuthPojo> {
-    // ⚠ 关键：手动拼 form-urlencoded，不要用 URLSearchParams
-    // URLSearchParams.toString() 会把 %20 转 +，后端不认
-    const body = [`client_id=${encodeURIComponent(this.config.clientId)}`, `scope=${encodeURIComponent(this.config.scope)}`, `username=${encodeURIComponent(username)}`, `password=${encodeURIComponent(password)}`, `grant_type=password`].join("&");
-
-    const headers: Record<string, string> = {
-      "Content-Type": "application/x-www-form-urlencoded"
-    };
-    if (tenant) headers.__tenant = tenant;
-
-    const res = await this.http.request({
-      method: "POST",
-      path: this.config.tokenUrl,
-      body,
-      headers
-    });
-
-    const json = JSON.parse(res.bodyText || "{}");
-    if (!res.ok || json.error) {
-      throw new AuthLoginError(json.error_description || json.error || `HTTP ${res.status}`, json);
-    }
-    return {
-      token: json.access_token,
-      refreshToken: json.refresh_token,
-      tokenType: json.token_type,
-      expiresIn: json.expires_in
-    };
+  if (!response.ok) {
+    throw new Error(`login failed: HTTP ${response.status}`);
   }
 
-  async refreshToken(refreshToken: string): Promise<AuthPojo> {
-    const body = [`client_id=${encodeURIComponent(this.config.clientId)}`, `scope=${encodeURIComponent(this.config.scope)}`, `refresh_token=${encodeURIComponent(refreshToken)}`, `grant_type=refresh_token`].join("&");
-
-    const res = await this.http.request({
-      method: "POST",
-      path: this.config.tokenUrl,
-      body,
-      headers: { "Content-Type": "application/x-www-form-urlencoded" }
-    });
-
-    const json = JSON.parse(res.bodyText || "{}");
-    if (!res.ok || json.error) {
-      throw new AuthLoginError(json.error_description || json.error || `HTTP ${res.status}`, json);
-    }
-    return {
-      token: json.access_token,
-      refreshToken: json.refresh_token,
-      tokenType: json.token_type,
-      expiresIn: json.expires_in
-    };
+  const token = JSON.parse(response.bodyText) as TokenResponse;
+  localStorage.setItem("myapp_access_token", token.access_token);
+  if (token.refresh_token) {
+    localStorage.setItem("myapp_refresh_token", token.refresh_token);
   }
 }
 ```
 
-## 步骤 5：写业务 middleware（可选，按后端协议）
+端点、`client_id`、scope 和响应字段必须以实际后端协议为准，不要直接照抄示例值。
 
-如果后端用 envelope 包装（如 ABP 的 `{code, data, message}`），需要写解包 middleware。
+### 配置 Token 刷新
+
+把最小示例中的 `authRefresher` 替换为真实刷新实现：
 
 ```typescript
-// src/middleware/abp-unwrap-mw.ts
-import { RetryableError } from "@xapiforge/core";
-import type { Middleware } from "openapi-fetch";
+const authService = new AuthService({
+  tokenStore: localStorageStore("myapp_access_token"),
+  authRefresher: {
+    async refresh() {
+      const refreshToken = localStorage.getItem("myapp_refresh_token");
+      if (!refreshToken) throw new Error("refresh token is missing");
 
-interface AbpEnvelope<T = unknown> {
+      const body = new URLSearchParams({
+        grant_type: "refresh_token",
+        client_id: "web_app",
+        refresh_token: refreshToken
+      }).toString();
+
+      const response = await http.request({
+        method: "POST",
+        path: "/oauth/token",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body
+      });
+      if (!response.ok) throw new Error(`refresh failed: HTTP ${response.status}`);
+
+      const token = JSON.parse(response.bodyText) as TokenResponse;
+      if (token.refresh_token) {
+        localStorage.setItem("myapp_refresh_token", token.refresh_token);
+      }
+      return token.access_token;
+    }
+  },
+  onAuthFailed() {
+    void router.push("/login");
+  }
+});
+```
+
+并发请求同时遇到 401 时，`AuthService` 会把刷新合并为一次；其他请求等待同一个刷新结果。具体行为见[鉴权详解](../guides/auth.md)。
+
+### 添加业务 middleware
+
+只有后端使用 HTTP 状态码以外的业务 envelope 时才需要额外 middleware。下面是通用示例，不属于 xapiforge 内核协议：
+
+```typescript
+import { RetryableError } from "@xapiforge/core";
+import type { Middleware } from "@xapiforge/core";
+
+interface Envelope<T = unknown> {
   code: number;
   data: T;
   message?: string;
 }
 
-// ABP 业务鉴权码（HTTP 200 + envelope code，触发 refresh）
-const ABP_AUTH_CODES = new Set([40001, 40002, 41001]);
-
-export class AbpBizError extends Error {
-  readonly code: number;
-  constructor(code: number, message: string) {
-    super(`ABP biz error ${code}: ${message}`);
-    this.name = "AbpBizError";
-    this.code = code;
-  }
-}
-
-export function createAbpUnwrapMw(authCodes: number[] = [...ABP_AUTH_CODES]): Middleware {
+export function createEnvelopeMiddleware(authCodes: number[] = []): Middleware {
   const authCodeSet = new Set(authCodes);
   return {
     async onResponse({ response }) {
-      if (!response.ok) return response; // 非 2xx 交给内核 middleware
-      const ct = response.headers.get("Content-Type") ?? "";
-      if (!ct.includes("application/json")) return response;
+      if (!response.ok) return response;
+      if (!(response.headers.get("Content-Type") ?? "").includes("application/json")) {
+        return response;
+      }
 
       const text = await response.clone().text();
       if (!text) return response;
 
-      let envelope: AbpEnvelope;
-      try {
-        envelope = JSON.parse(text);
-      } catch {
-        return response; // 非 JSON 不处理
-      }
-
-      if (typeof envelope.code !== "number") return response; // 非 ABP 格式
-
-      if (envelope.code === 0) {
-        // 成功：解包 data，替换 response body
-        return new Response(JSON.stringify(envelope.data), {
+      const payload = JSON.parse(text) as Partial<Envelope>;
+      if (typeof payload.code !== "number") return response;
+      if (payload.code === 0) {
+        return new Response(JSON.stringify(payload.data), {
           status: response.status,
           statusText: response.statusText,
           headers: response.headers
         });
       }
-
-      if (authCodeSet.has(envelope.code)) {
-        // 业务鉴权码：抛 RetryableError 触发 refresh + 重试
-        throw new RetryableError(`abp auth code ${envelope.code}`, { needsRefresh: true });
+      if (authCodeSet.has(payload.code)) {
+        throw new RetryableError(`authentication code ${payload.code}`, {
+          needsRefresh: true
+        });
       }
-
-      // 业务错误：抛 AbpBizError
-      throw new AbpBizError(envelope.code, envelope.message ?? "unknown");
+      throw new Error(payload.message ?? `business error ${payload.code}`);
     }
   };
 }
 ```
 
-## 步骤 6：初始化（应用入口）
+初始化时传入：
 
 ```typescript
-// src/main.ts
-import { createApp } from "vue";
-import { AuthService, HttpClient } from "@xapiforge/core";
-import { localStorageStore } from "@xapiforge/adapter-browser";
-import { createRouter, createWebHistory } from "vue-router";
-import { AuthApi } from "./AuthApi";
-import { createAbpUnwrapMw } from "./middleware/abp-unwrap-mw";
-import { initApi } from "./api";
-
-const BASE_URL = "http://localhost:7001";
-
-// Vue Router（401 跳登录用）
-const router = createRouter({
-  history: createWebHistory(),
-  routes: [
-    { path: "/login", component: () => import("./views/Login.vue") },
-    { path: "/", component: () => import("./views/Home.vue") }
-  ]
-});
-
-// 1. HttpClient（纯 HTTP，给 AuthApi / 文件下载用）
-const httpClient = new HttpClient({ baseURL: BASE_URL });
-
-// 2. AuthApi（用 HttpClient 调 /connect/token）
-const authApi = new AuthApi(httpClient, {
-  tokenUrl: "/connect/token",
-  clientId: "Infrastructure_Web",
-  scope: "offline_access Infrastructure"
-});
-
-// 3. AuthService（鉴权状态机）
-const authService = new AuthService({
-  tokenStore: localStorageStore("app_token"),
-  authRefresher: {
-    async refresh() {
-      const refreshToken = localStorage.getItem("app_refresh_token");
-      if (!refreshToken) throw new Error("no refresh_token");
-      const r = await authApi.refreshToken(refreshToken);
-      localStorage.setItem("app_refresh_token", r.refreshToken ?? "");
-      return r.token;
-    }
-  },
-  onAuthFailed: () => {
-    void router.push("/login"); // refresh 失败 → 跳登录
-  }
-});
-
-// 4. 注册业务 client（createNet + middleware）
-initApi("default", {
+export const api = createMyappClient({
   baseURL: BASE_URL,
   authService,
-  middleware: [createAbpUnwrapMw()], // ABP envelope 解包
-  maxRetries: 3 // 429 退避重试
+  middleware: [createEnvelopeMiddleware([40101])],
+  maxRetries: 3
 });
-
-createApp(App).use(router).mount("#app");
 ```
 
-## 步骤 7：业务代码调用
+后端协议差异应由业务项目通过 middleware 或 genapi hooks 适配，不应写进通用内核。
 
-```typescript
-// src/views/Home.vue
-import { useApi } from "../api";
+## 常见问题
 
-const api = useApi();
+### xapiforge 或 xapiforge-fetch 找不到
 
-// 强类型调用（路径 / 参数 / 响应都有类型校验）
-const user = await api.base.GET("/api/identity/users/{id}", {
-  params: { path: { id: "u-001" } }
-});
+确认开发依赖已经安装：
 
-// 文件下载（走内核 middleware：鉴权 + 重试 + 进度）
-const { blob, filename } = await api.download("/api/file/download?id=123", {
-  onProgress: (received, total) => console.log(`${received}/${total}`)
-});
-
-// 错误处理
-import { AuthError, NetworkError } from "@xapiforge/core";
-import { AbpBizError } from "../middleware/abp-unwrap-mw";
-
-try {
-  await api.base.POST("/api/orders", { body: {/* ... */} });
-} catch (e) {
-  if (e instanceof AuthError) {
-    /* 鉴权失败（refresh 也失败） */
-  } else if (e instanceof NetworkError) {
-    /* 网络错误（5xx / 超时） */
-  } else if (e instanceof AbpBizError) {
-    /* 业务错误（envelope code != 0） */
-  }
-}
+```bash
+pnpm add -D @xapiforge/genapi
 ```
 
-## 完整示例
+通过 `package.json` scripts 调用，不要依赖全局安装。
 
-完整的浏览器接入示例见 [examples/demo-app/](https://github.com/)，包含：
+### pnpm 报 ERR_PNPM_IGNORED_BUILDS
 
-- 登录页面 + token 存储
-- CRUD 页面（强类型 API 调用）
-- 文件下载（进度 + 文件名提取）
-- 第三方 API 接入（多 client 共存）
-- ABP envelope 解包 middleware
+pnpm 的严格供应链配置可能阻止 `esbuild` 安装脚本。确认依赖来源后执行：
 
-## 下一步
+```bash
+pnpm approve-builds esbuild
+pnpm install
+```
 
-- [鉴权详解](../guides/auth.md) — token 刷新机制 / 单飞 / 窗口保护
-- [自定义 middleware](../guides/middleware.md) — 适配非 ABP 后端协议
-- [文件下载](../guides/file-download.md) — 流式下载 / 大文件 / 断点续传
-- [错误处理](../guides/error-handling.md) — 错误类型体系 / 业务错误
+### offline 模式提示 swagger 文件缺失
+
+检查目录是否符合：
+
+```text
+<outputDir>/<project.name>/<service.name>.json
+```
+
+默认就是：
+
+```text
+swagger/myapp/base.json
+```
+
+### 生成成功，但 TypeScript 找不到路径
+
+先确认该 path 确实存在于对应 swagger.json，再重新执行：
+
+```bash
+pnpm generate:api myapp
+```
+
+不要手工修改生成文件。
+
+## 完整示例与后续阅读
+
+仓库中的 `examples/demo-app` 展示了登录、刷新、多客户端、业务 middleware 和文件下载。
+
+- [鉴权详解](../guides/auth.md)
+- [自定义 middleware](../guides/middleware.md)
+- [genapi hooks](../guides/genapi-hooks.md)
+- [文件下载](../guides/file-download.md)
+- [错误处理](../guides/error-handling.md)
