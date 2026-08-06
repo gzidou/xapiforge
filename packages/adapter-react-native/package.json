@@ -1,6 +1,6 @@
 {
   "name": "@xapiforge/adapter-react-native",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": false,
   "description": "React Native secure token-storage adapters for xapiforge",
   "type": "module",
@@ -31,7 +31,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "!dist/**/*.map"
   ],
   "publishConfig": {
     "access": "public",

@@ -2,10 +2,23 @@
 
 React Native token-storage adapters for `@xapiforge/core`.
 
+## Install
+
 ```bash
-pnpm add @xapiforge/core @xapiforge/adapter-react-native
+pnpm add @xapiforge/core @xapiforge/adapter-react-native react-native-keychain
 ```
 
-Install the secure-storage library required by the adapter implementation you select in your application. It is intentionally not forced as a package peer dependency.
+## Store a token in Keychain/Keystore
 
-See the [React Native guide](https://github.com/gzidou/xapiforge/blob/main/docs/getting-started/react-native.md).
+```typescript
+import { keychainStore } from "@xapiforge/adapter-react-native";
+
+const tokenStore = keychainStore({ service: "myapp.access-token" });
+await tokenStore.set("access-token");
+const token = await tokenStore.get();
+await tokenStore.clear();
+```
+
+Alternatively, install `react-native-encrypted-storage` and use `encryptedStorageStore(key)`. The host application owns these native dependencies so it can choose versions compatible with its React Native runtime.
+
+See the [React Native guide](https://github.com/gzidou/xapiforge/blob/main/docs/getting-started/react-native.md) for `AuthService` and generated-client integration.

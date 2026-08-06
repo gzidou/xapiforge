@@ -1,6 +1,6 @@
 {
   "name": "@xapiforge/adapter-capacitor",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": false,
   "description": "Capacitor token-storage and native HTTP adapters for xapiforge",
   "type": "module",
@@ -31,7 +31,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "!dist/**/*.map"
   ],
   "publishConfig": {
     "access": "public",

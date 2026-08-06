@@ -1,6 +1,6 @@
 {
   "name": "@xapiforge/core",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": false,
   "description": "Framework-agnostic TypeScript HTTP client with authentication, retry, and data-or-throw errors",
   "type": "module",
@@ -31,7 +31,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "!dist/**/*.map"
   ],
   "publishConfig": {
     "access": "public",

@@ -10,6 +10,11 @@ const packageDir = dirname(fileURLToPath(new URL("../package.json", import.meta.
 const cliPath = join(packageDir, "dist", "cli.js");
 const fetchCliPath = join(packageDir, "dist", "fetch-cli.js");
 
+test("published package carries its compatible TypeScript runtime", async () => {
+  const packageJson = JSON.parse(await readFile(join(packageDir, "package.json"), "utf8"));
+  assert.equal(packageJson.dependencies.typescript, "^5.9.3");
+});
+
 test("CLI generates types without consumer-level dependency binaries", async () => {
   const consumerDir = await mkdtemp(join(tmpdir(), "xapiforge-genapi-consumer-"));
   try {
