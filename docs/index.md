@@ -2,19 +2,19 @@
 layout: home
 
 hero:
-  name: "@xapiforge/core"
-  text: "Framework-agnostic HTTP client + API generator"
-  tagline: 框架无关 · 多运行时 · 类型安全 · 鉴权内置
+  name: "xapiforge"
+  text: "OpenAPI 客户端生成与请求治理"
+  tagline: 一套类型安全的客户端，适配浏览器、Capacitor 和 React Native
   actions:
     - theme: brand
       text: 快速接入
-      link: /getting-started/browser
+      link: /getting-started/
     - theme: alt
       text: 使用文档
       link: /guides/auth
     - theme: alt
       text: 维护文档
-      link: /internals/architecture-v0.2
+      link: /internals/maintenance
 
 features:
   - title: 框架无关
@@ -28,5 +28,5 @@ features:
   - title: middleware 链
     details: 内置 auth / retry / httpError 三个内核 middleware。业务侧可加自定义 middleware（如 ABP envelope 解包）。
   - title: 文件下载
-    details: api.download 走内核 middleware（鉴权 / 重试 / 进度）。Capacitor 环境提供 downloadFileNative 原生直写磁盘（0 内存）。
+    details: 浏览器可按需组装带鉴权和进度的下载封装；Capacitor adapter 提供 downloadFileNative，直接写入原生目录。
 ---

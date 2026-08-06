@@ -1,207 +1,122 @@
 # 文件下载
 
-> 本文档详解 `@xapiforge/core` 的文件下载机制：api.download、流式模式、断点续传、Capacitor 原生下载。
+先确认 API 边界：`@xapiforge/core` 不导出名为 `api.download` 的公共函数。仓库 demo 中有一套业务层下载封装，`@xapiforge/adapter-capacitor` 则公开提供 `downloadFileNative`。接入时按文件大小、鉴权方式和运行环境选择。
 
-## 两种下载 API
+## 能力对照
 
-| API                              | 适用场景                                       | 内存占用                          | 走 middleware | 运行时       |
-| -------------------------------- | ---------------------------------------------- | --------------------------------- | ------------- | ------------ |
-| `api.download(url, { onChunk })` | API 返回流（POST 下载，需鉴权/retry/envelope） | 流式：低；Capacitor 退化 blob：高 | ✅            | 全部         |
-| `downloadFileNative(url, path)`  | 静态文件 URL（如 http://xxx/xxx.pdf）          | 0（原生直写磁盘）                 | ❌            | 仅 Capacitor |
+| 方式                                           | 来自哪里                       | 经过 createNet middleware | 适合场景                           |
+| ---------------------------------------------- | ------------------------------ | ------------------------- | ---------------------------------- |
+| `HttpClient.request({ responseType: "blob" })` | `@xapiforge/core`              | 否                        | 浏览器小文件、简单 GET             |
+| demo 的 `api.download`                         | `examples/demo-app` 业务封装   | 是                        | 需要鉴权、重试、进度或 POST 的下载 |
+| `downloadFileNative(options)`                  | `@xapiforge/adapter-capacitor` | 否                        | Capacitor 大文件直接写原生目录     |
 
-**选型决策树**：
+生成客户端本身仍可调用 OpenAPI 中声明的文件端点，但是否得到 `Blob` 取决于 OpenAPI 的响应 schema 和底层解析方式。需要进度或流式写盘时，应使用专门的下载封装。
 
-```text
-要下载的文件是？
-├─ API 返回流（POST + body，需鉴权）
-│  └─ api.download(url, { onChunk })
-│
-└─ 静态文件 URL（GET，URL 自带签名 or 公开）
-   ├─ 浏览器环境
-   │  └─ api.download(url)（走 fetch，支持进度）
-   │
-   └─ Capacitor 环境 + 大文件（>100MB）
-      └─ downloadFileNative(url, path)（原生直写磁盘，0 内存）
-```
+## 浏览器小文件
 
-## api.download 用法
-
-### 小文件（内存模式）
+`HttpClient` 可以把整个响应读成 Blob：
 
 ```typescript
-const { blob, filename } = await api.download("/api/file/download?id=123", {
-  onProgress: (received, total) => {
-    console.log(`${received}/${total}`); // 0/102400 → 102400/102400
-  }
+import { HttpClient } from "@xapiforge/core";
+
+const http = new HttpClient({ baseURL: "https://api.example.com" });
+const response = await http.request({
+  method: "GET",
+  path: "/files/report.pdf",
+  responseType: "blob",
+  headers: { Authorization: `Bearer ${accessToken}` }
 });
 
-// 触发浏览器下载
-const url = URL.createObjectURL(blob!);
-const a = document.createElement("a");
-a.href = url;
-a.download = filename ?? "download.bin";
-a.click();
-URL.revokeObjectURL(url);
-```
-
-### 大文件（流式模式，浏览器）
-
-```typescript
-// 用 File System Access API 流式写盘（Chromium 浏览器）
-const handle = await window.showSaveFilePicker({ suggestedName: "big.zip" });
-const writable = await handle.createWritable();
-
-await api.download("/api/big-file", {
-  onChunk: async chunk => {
-    await writable.write(chunk); // 每个 chunk 直接写盘，不累积
-  },
-  onProgress: (received, total) => {
-    updateProgressBar(received, total);
-  }
-});
-
-await writable.close();
-```
-
-### 断点续传
-
-```typescript
-// 记录已下载字节
-let downloaded = 0;
-try {
-  await api.download("/api/big-file", {
-    rangeFrom: downloaded, // 自动加 Range: bytes=downloaded-
-    onChunk: async (chunk, received) => {
-      downloaded = received;
-      await saveChunk(chunk);
-    },
-    onProgress: received => {
-      downloaded = received;
-    }
-  });
-} catch (e) {
-  // 中断后，downloaded 保留已下载字节，下次从 rangeFrom: downloaded 继续
-  console.log("已下载", downloaded, "字节");
+if (!response.ok || !response.blob) {
+  throw new Error(`download failed: HTTP ${response.status}`);
 }
+
+const objectUrl = URL.createObjectURL(response.blob);
+const link = document.createElement("a");
+link.href = objectUrl;
+link.download = "report.pdf";
+link.click();
+URL.revokeObjectURL(objectUrl);
 ```
 
-### POST 下载（API 返回流）
+这条路径不会自动注入 Token、刷新 401、重试 429，也不会解析业务 envelope。上例显式传入了 Authorization；Token 过期时应由业务代码决定如何处理。
 
-```typescript
-const { blob } = await api.download("/api/export/report", {
-  method: "POST",
-  body: JSON.stringify({ startDate: "2026-01-01", endDate: "2026-12-31" }),
-  headers: { "Content-Type": "application/json" },
-  onProgress: (r, t) => updateProgress(r, t)
-});
+## 需要鉴权和进度的下载
+
+`examples/demo-app/src/api/init.ts` 实现了 demo 专用的 `api.download`。它基于无 schema 的 `createNet` client 发请求，因此可以复用鉴权、401 刷新、429 重试和 HTTP 错误归一化，并在浏览器支持 `ReadableStream` 时报告 chunk 和进度。
+
+参考实现：[examples/demo-app/src/api/init.ts](../../examples/demo-app/src/api/init.ts)
+
+它不是 npm 包导出，复制到业务项目时至少要确认：
+
+- 文件端点是否需要业务 envelope 解包。
+- GET、POST、query 和 body 的序列化方式。
+- `Content-Disposition` 文件名规则。
+- 浏览器不支持流式写盘时的内存上限。
+- 中止、超时和部分文件如何清理。
+
+不要在业务代码里假定所有生成客户端都有 `download` 方法；只有项目自己注册了这层封装后才能这样调用。
+
+## Capacitor 原生下载
+
+先在应用项目安装原生依赖并同步：
+
+```bash
+pnpm add @xapiforge/adapter-capacitor @capacitor/filesystem
+pnpm exec cap sync
 ```
 
-## downloadFileNative 用法（仅 Capacitor）
-
-### 基本用法
+然后直接写入原生目录：
 
 ```typescript
 import { downloadFileNative } from "@xapiforge/adapter-capacitor";
 
 const result = await downloadFileNative({
   url: "https://api.example.com/files/report.pdf",
-  path: "report.pdf",
-  directory: "DOCUMENTS", // Documents / Cache / External / Library
-  headers: { Authorization: `Bearer ${token}` },
-  onProgress: (bytes, contentLength) => {
-    console.log(`${bytes}/${contentLength}`);
+  path: "reports/report.pdf",
+  directory: "DOCUMENTS",
+  getHeaders: async () => ({
+    Authorization: `Bearer ${await getLatestAccessToken()}`
+  }),
+  onProgress(received, total) {
+    console.log(`${received}/${total}`);
   }
 });
 
-console.log("下载完成:", result.path);
+console.log(result.path);
 ```
 
-### 动态鉴权
+`getHeaders` 在下载开始前执行，适合读取最新 Token。它不会自动调用 `AuthService.refreshIfNeeded()`；需要预刷新时由应用在回调中完成。
 
-下载前获取最新 token（避免静态 headers 里 token 过期）：
-
-```typescript
-const result = await downloadFileNative({
-  url: "https://api.example.com/files/report.pdf",
-  path: "report.pdf",
-  directory: "DOCUMENTS",
-  // getHeaders 优先级高于 headers（覆盖同名字段）
-  getHeaders: async () => {
-    const token = await authService.getToken();
-    return { Authorization: `Bearer ${token}` };
-  },
-  onProgress: (bytes, total) => updateProgress(bytes, total)
-});
-```
-
-### 取消下载
+## 错误和取消
 
 ```typescript
-const controller = new AbortController();
-
-// 取消
-controller.abort();
+import { DownloadFileNativeError, downloadFileNative } from "@xapiforge/adapter-capacitor";
 
 try {
   await downloadFileNative({
-    url: "...",
-    path: "...",
-    directory: "DOCUMENTS",
-    signal: controller.signal // 传入 AbortSignal
+    url,
+    path: "report.pdf",
+    signal: abortController.signal
   });
-} catch (e) {
-  if (e instanceof Error && e.name === "AbortError") {
-    console.log("用户取消");
+} catch (error) {
+  if (error instanceof DownloadFileNativeError) {
+    console.error(error.code, error.cause);
   }
 }
 ```
 
-> ⚠ CapacitorHttp 不支持真正 abort。`signal` abort 后 JS 侧立即 reject，但原生请求继续在后台跑。
+错误码：
 
-### 错误处理
+- `MODULE_NOT_FOUND`：应用没有安装或同步 `@capacitor/filesystem`。
+- `ABORTED`：JavaScript 侧已取消；原生下载可能仍在后台继续。
+- `DOWNLOAD_FAILED`：原生插件返回失败，原始错误保存在 `cause`。
 
-```typescript
-import { downloadFileNative, DownloadFileNativeError } from "@xapiforge/adapter-capacitor";
+多个 `downloadFileNative` 调用会排队执行，避免 Capacitor 全局 progress 事件串扰。取消后如果产生了部分文件，应用需要按自身策略清理。
 
-try {
-  await downloadFileNative({/* ... */});
-} catch (e) {
-  if (e instanceof DownloadFileNativeError) {
-    switch (e.code) {
-      case "MODULE_NOT_FOUND":
-        console.error("@capacitor/filesystem 未安装");
-        break;
-      case "ABORTED":
-        console.log("用户取消");
-        break;
-      case "DOWNLOAD_FAILED":
-        console.error("原生下载失败:", e.cause); // 原始错误
-        break;
-    }
-  }
-}
-```
+## 选型建议
 
-## 并发下载（Capacitor）
-
-Capacitor 的 progress listener 是全局事件，多个 `downloadFileNative` 并发时进度会串扰。`downloadFileNative` 内部用串行队列保证同时只有一个下载在跑：
-
-```typescript
-// 3 个下载会自动排队（FIFO），不会并发
-const [r1, r2, r3] = await Promise.all([downloadFileNative({ url: "...", path: "file1.pdf", directory: "DOCUMENTS" }), downloadFileNative({ url: "...", path: "file2.pdf", directory: "DOCUMENTS" }), downloadFileNative({ url: "...", path: "file3.pdf", directory: "DOCUMENTS" })]);
-```
-
-## 已知限制
-
-| 限制                            | api.download                 | downloadFileNative             |
-| ------------------------------- | ---------------------------- | ------------------------------ |
-| Capacitor response.body 为 null | 退化 blob 模式（大文件 OOM） | 不受影响（原生层处理）         |
-| 取消请求                        | ✅ signal 真正 abort         | ❌ signal abort 后原生请求继续 |
-| 上传进度                        | ❌ fetch API 限制            | N/A                            |
-| 并发进度                        | ✅ 各请求独立                | ⚠ 串行队列（同时只一个）       |
-| middleware（auth/retry）        | ✅                           | ❌                             |
-
-## 下一步
-
-- [Capacitor 接入](../getting-started/ionic-capacitor.md) — capacitorFetch 适配器
-- [错误处理](./error-handling.md) — DownloadFileNativeError 错误码
+- 浏览器中几十 MB 以内、无需进度：先用 `HttpClient` Blob 模式。
+- 需要自动鉴权、POST、进度或分块处理：在业务层维护类似 demo 的下载封装，并纳入业务测试。
+- Capacitor 大文件：优先 `downloadFileNative`，在真机上验证目录权限、取消和磁盘空间不足。
+- React Native：使用 `react-native-fs`、Expo FileSystem 等应用选定的原生方案；xapiforge 当前没有 RN 下载 adapter。

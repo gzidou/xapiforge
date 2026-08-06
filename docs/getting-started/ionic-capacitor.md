@@ -1,239 +1,126 @@
 # Ionic / Capacitor 接入
 
-> 本文档展示在 Ionic + Capacitor 应用里接入 `@xapiforge/core` 的完整步骤。前置步骤（xapiforge.config.ts / 生成 API / AuthApi / middleware）与 [浏览器接入](./browser.md) 相同，本文只讲差异点。
+这页只说明 Capacitor 与普通浏览器项目的差异。OpenAPI 配置、客户端生成、登录和错误处理先按[浏览器应用接入](./browser.md)完成。
 
-## 为什么需要单独接入
+`@xapiforge/adapter-capacitor` 当前提供两类能力：
 
-Capacitor 应用跑在 webview 里，直接用 `fetch` 有三个问题：
+- 基于 Capacitor Preferences 或 Secure Storage 的 TokenStore。
+- 基于 Capacitor Filesystem 的原生文件下载。
 
-1. **CORS 限制**：webview 的 CORS 策略比浏览器严格，跨域请求被拦
-2. **证书问题**：自签名 HTTPS 证书在 webview 里无法手动信任
-3. **性能**：fetch 走 webview 网络栈，大文件下载慢
+它不包含 `CapacitorHttp` 的 fetch 适配器。应用可以继续使用 WebView 的 `fetch`，也可以把自己已经验证过的原生 HTTP 适配器通过 `fetch` 配置注入。
 
-解法：注入 `capacitorFetch` 适配器，让 `@xapiforge/core` 走 Capacitor 原生 HTTP（iOS NSURLSession / Android OkHttp），绕过 webview 限制。
+## 1. 安装依赖
 
-## 架构
-
-```text
-┌─────────────── Ionic App ──────────────┐
-│  业务代码（api.base.GET(...)）          │
-├────────────────────────────────────────┤
-│  @xapiforge/core                         │
-│  └─ createNet({ fetch: capacitorFetch })│  ← 注入 capacitorFetch
-├────────────────────────────────────────┤
-│  capacitorFetch 适配器（业务侧写）       │
-│  └─ CapacitorHttp.request → Response    │  ← 走原生 HTTP
-├────────────────────────────────────────┤
-│  @capacitor/core（原生 HTTP 插件）       │
-│  └─ iOS NSURLSession / Android OkHttp   │
-└────────────────────────────────────────┘
-```
-
-## 步骤 1：安装依赖
+使用 Preferences 保存 Token：
 
 ```bash
-pnpm add @xapiforge/core @xapiforge/adapter-capacitor
-pnpm add @capacitor/core @capacitor/filesystem
-pnpm add -D @xapiforge/genapi openapi-fetch
+pnpm add @xapiforge/core @xapiforge/adapter-capacitor @capacitor/preferences
+pnpm add -D @xapiforge/genapi
 ```
 
-> `@capacitor/*` 是原生插件，必须装在应用项目里（不能写在 `@xapiforge/adapter-capacitor` 的 package.json，否则 monorepo install 会 404）。
+如果项目要求使用 Keychain / Keystore，把 `@capacitor/preferences` 换成 `@capacitor-community/secure-storage`，代码中使用 `secureStorageStore`。
 
-## 步骤 2：写 capacitorFetch 适配器
+需要原生文件下载时再安装：
 
-`capacitorFetch` 把 `fetch` 签名适配到 `CapacitorHttp.request`。
-
-```typescript
-// src/capacitor-fetch.ts
-import type { FetchLike } from "@xapiforge/core";
-
-/** 动态加载 @capacitor/core，避免 web 构建时引入原生依赖 */
-async function loadCapacitorHttp() {
-  const { CapacitorHttp } = await import("@capacitor/core");
-  return CapacitorHttp;
-}
-
-/** fetch Request → CapacitorHttp options */
-async function fetchToCapacitorOptions(
-  input: RequestInfo | URL,
-  init?: RequestInit
-): Promise<{
-  url: string;
-  method: string;
-  headers: Record<string, string>;
-  data?: unknown;
-  responseType?: "blob" | "json" | "text" | "arraybuffer";
-}> {
-  const req = new Request(input, init);
-  const url = req.url;
-  const method = req.method;
-  const headers: Record<string, string> = {};
-  req.headers.forEach((v, k) => {
-    headers[k] = v;
-  });
-
-  // body 处理
-  let data: unknown;
-  if (init?.body) {
-    const body = init.body;
-    if (typeof body === "string") {
-      data = body;
-    } else if (body instanceof Blob) {
-      // 二进制：转 base64 透传（避免 UTF-8 损坏）
-      data = await blobToBase64(body);
-      headers["Content-Type"] = body.type || "application/octet-stream";
-    } else if (body instanceof ArrayBuffer) {
-      data = await blobToBase64(new Blob([body]));
-    } else if (body instanceof FormData) {
-      // FormData 不支持原生层直接传，退化为 JSON
-      data = Object.fromEntries(body.entries());
-    }
-  }
-
-  return { url, method, headers, data };
-}
-
-function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      const result = reader.result as string;
-      resolve(result.split(",")[1] ?? "");
-    };
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
-}
-
-/** CapacitorHttp response → fetch Response */
-function capacitorResponseToWebResponse(capRes: { status: number; headers: Record<string, string>; data: unknown }): Response {
-  const headers = new Headers(capRes.headers);
-  const body = typeof capRes.data === "string" ? capRes.data : JSON.stringify(capRes.data);
-  return new Response(body, {
-    status: capRes.status,
-    headers
-  });
-}
-
-export const capacitorFetch: FetchLike = async (input, init) => {
-  const http = await loadCapacitorHttp();
-  const opts = await fetchToCapacitorOptions(input, init);
-
-  // signal 处理：CapacitorHttp 不支持 abort，用 race 让 JS 侧能立即 reject
-  const signal = init?.signal;
-  if (!signal) {
-    const res = await http.request(opts);
-    return capacitorResponseToWebResponse(res);
-  }
-
-  if (signal.aborted) {
-    throw new DOMException("The user aborted a request", "AbortError");
-  }
-
-  return new Promise<Response>((resolve, reject) => {
-    const onAbort = () => reject(new DOMException("The user aborted a request", "AbortError"));
-    signal.addEventListener("abort", onAbort, { once: true });
-
-    http
-      .request(opts)
-      .then(res => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(capacitorResponseToWebResponse(res));
-      })
-      .catch((e: unknown) => {
-        signal.removeEventListener("abort", onAbort);
-        if (signal.aborted) {
-          reject(new DOMException("The user aborted a request", "AbortError"));
-          return;
-        }
-        reject(e instanceof Error ? e : new Error(String(e)));
-      });
-  });
-};
+```bash
+pnpm add @capacitor/filesystem
+pnpm exec cap sync
 ```
 
-## 步骤 3：初始化时注入 capacitorFetch
+原生插件由应用项目直接依赖，便于和当前 Capacitor 主版本保持一致。
+
+## 2. 初始化生成客户端
+
+以下代码假设浏览器接入步骤已经生成 `createMyappClient`：
 
 ```typescript
-// src/main.ts
-import { AuthService, HttpClient } from "@xapiforge/core";
+// src/api-client.ts
 import { preferencesStore } from "@xapiforge/adapter-capacitor";
-import { capacitorFetch } from "./capacitor-fetch";
-import { AuthApi } from "./AuthApi";
-import { initApi } from "./api";
+import { AuthService } from "@xapiforge/core";
+import { createMyappClient } from "./api/myapp/index.js";
 
-const BASE_URL = "https://api.example.com";
-
-// HttpClient 注入 capacitorFetch
-const httpClient = new HttpClient({ baseURL: BASE_URL, fetch: capacitorFetch });
-const authApi = new AuthApi(httpClient, {/* ... */});
+const accessTokenStore = preferencesStore("myapp_access_token");
 
 const authService = new AuthService({
-  tokenStore: preferencesStore("app_token"), // Capacitor Preferences
+  tokenStore: accessTokenStore,
   authRefresher: {
     async refresh() {
-      const r = await authApi.refreshToken(/* ... */);
-      return r.token;
+      // 按实际后端协议调用刷新端点并返回新的 access token。
+      throw new Error("token refresh is not configured");
     }
   },
-  onAuthFailed: () => {
-    /* 跳登录 */
+  onAuthFailed() {
+    // 在应用路由层跳转到登录页。
   }
 });
 
-// createNet 注入 capacitorFetch —— 所有 API 调用走原生 HTTP
-initApi("default", {
-  baseURL: BASE_URL,
-  authService,
-  middleware: [/* ... */],
-  fetch: capacitorFetch // ← 关键：注入
+export const api = createMyappClient({
+  baseURL: "https://api.example.com",
+  authService
 });
 ```
 
-## 步骤 4：大文件下载用 downloadFileNative
+Preferences 适合非敏感配置。生产环境保存访问令牌时，应根据安全要求评估 `secureStorageStore`。
 
-`api.download(url, { onChunk })` 走 fetch + ReadableStream，但 Capacitor 的 response.body 是 null（一次性返回完整响应），流式下载退化到 blob 模式，大文件会 OOM。
+## 3. 选择网络实现
 
-解法：静态文件 URL 下载用 `downloadFileNative`，原生层直写磁盘（0 内存）。
+不传 `fetch` 时，客户端使用 WebView 的全局 `fetch`：
+
+```typescript
+export const api = createMyappClient({
+  baseURL: "https://api.example.com",
+  authService
+});
+```
+
+这种方式最简单，但仍受 WebView CORS 和证书策略约束。
+
+如果项目已有把 `CapacitorHttp` 转成标准 `fetch` 签名的适配器，可以注入：
+
+```typescript
+import type { FetchLike } from "@xapiforge/core";
+
+declare const capacitorFetch: FetchLike;
+
+export const api = createMyappClient({
+  baseURL: "https://api.example.com",
+  authService,
+  fetch: capacitorFetch
+});
+```
+
+该适配器必须返回标准 `Response`，正确保留 status、headers 和 body，并明确处理 `AbortSignal`、FormData 和二进制响应。xapiforge 不替应用选择或包装某个 Capacitor HTTP 插件。
+
+## 4. 原生文件下载
+
+大文件不适合先读入 WebView 内存。安装 `@capacitor/filesystem` 后，可直接写入原生目录：
 
 ```typescript
 import { downloadFileNative } from "@xapiforge/adapter-capacitor";
 
-// 下载到 Documents 目录（原生层流式写盘）
 const result = await downloadFileNative({
   url: "https://api.example.com/files/report.pdf",
-  path: "report.pdf",
-  directory: "DOCUMENTS", // 或 "CACHE" / "EXTERNAL" / "LIBRARY"
-  headers: { Authorization: `Bearer ${token}` },
-  // 动态鉴权（下载前获取最新 token）
-  getHeaders: async () => ({ Authorization: `Bearer ${await getToken()}` }),
-  onProgress: (bytes, contentLength) => {
-    console.log(`${bytes}/${contentLength}`);
+  path: "reports/report.pdf",
+  directory: "DOCUMENTS",
+  getHeaders: async () => {
+    const token = await accessTokenStore.get();
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  },
+  onProgress(received, total) {
+    console.log(`${received}/${total}`);
   }
 });
 
-console.log("下载完成:", result.path);
+console.log(result.path);
 ```
 
-**两种下载 API 分工**：
-
-| API                              | 适用场景                                            | 内存占用                          | 走 middleware |
-| -------------------------------- | --------------------------------------------------- | --------------------------------- | ------------- |
-| `api.download(url, { onChunk })` | API 返回流（POST 下载，需鉴权/retry/envelope 解包） | 流式：低；Capacitor 退化 blob：高 | ✅            |
-| `downloadFileNative(url, path)`  | 静态文件 URL（如 http://xxx/xxx.pdf）               | 0（原生直写磁盘）                 | ❌            |
+`downloadFileNative` 不经过 `createNet` 的 middleware。需要刷新 Token 时，应在 `getHeaders` 中先完成刷新，再返回最新请求头。
 
 ## 已知限制
 
-1. **CapacitorHttp 不支持真正 abort**：`signal` abort 后 JS 侧立即 reject，但原生请求继续在后台跑
-2. **response.body 为 null**：CapacitorHttp 一次性返回完整响应，无 ReadableStream。流式下载需用 `downloadFileNative`
-3. **并发下载进度串扰**：Capacitor 的 progress listener 是全局事件，`downloadFileNative` 内部用串行队列保证同时只有一个下载在跑
-4. **FormData 不支持**：CapacitorHttp 原生层不直接支持 FormData，适配器退化为 JSON
+- Capacitor Filesystem 的下载取消只会让 JavaScript Promise 失败，原生下载可能仍在后台继续。
+- 下载进度事件是全局事件，adapter 会把多个下载排队执行，避免进度串扰。
+- `EXTERNAL` 目录只适用于 Android；跨平台优先使用 `DOCUMENTS` 或 `CACHE`。
+- 原生插件升级后要重新执行 `pnpm exec cap sync`，并在真机或模拟器上验证。
 
-## 完整示例
-
-完整的 Capacitor 接入示例（含 capacitorFetch + downloadFileNative）见 `examples/demo-app/src/capacitor-fetch.ts`（参考实现）。
-
-## 下一步
-
-- [文件下载详解](../guides/file-download.md) — api.download vs downloadFileNative 选型
-- [鉴权详解](../guides/auth.md) — token 刷新机制
+继续阅读：[鉴权详解](../guides/auth.md)、[文件下载](../guides/file-download.md)。

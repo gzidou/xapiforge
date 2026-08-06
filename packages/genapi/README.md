@@ -4,10 +4,10 @@ OpenAPI-to-TypeScript client generator for xapiforge projects.
 
 ## Install
 
-Generated clients import `openapi-fetch`, so install it as an application dependency:
+Install the generator as a development dependency. Generated clients use `@xapiforge/core`, which owns the `openapi-fetch` runtime dependency:
 
 ```bash
-pnpm add openapi-fetch
+pnpm add @xapiforge/core
 pnpm add -D @xapiforge/genapi
 ```
 
@@ -31,6 +31,7 @@ import { defineConfig } from "@xapiforge/genapi";
 
 export default defineConfig({
   defaultPath: "/swagger/v1/swagger.json",
+  timeoutMs: 15_000,
   outputDir: "swagger",
   genOutputDir: "src/api",
   projects: [
@@ -51,4 +52,4 @@ pnpm download-swagger
 pnpm generate:api myapp
 ```
 
-For offline specifications, hooks, and generated-client initialization, see the [browser onboarding guide](https://github.com/gzidou/xapiforge/blob/main/docs/getting-started/browser.md).
+For offline specifications, hooks, and generated-client initialization, see the [browser onboarding guide](https://gzidou.github.io/xapiforge/getting-started/browser).

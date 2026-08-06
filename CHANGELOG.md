@@ -2,6 +2,16 @@
 
 All notable changes to xapiforge are documented here.
 
+## Unreleased
+
+- Added clear entry points for first-time integrators and maintainers.
+- Corrected Capacitor and React Native dependency and initialization guidance.
+- Added package, scenario, native download, and documentation checks to the standard verification gate and CI.
+- Added a shared version command and partial-publish recovery support for maintainers.
+- Fixed browser cookie lookup for names containing regular-expression characters and documented cookie security limits.
+- Stopped generating package source maps and removed implementation comments from published JavaScript while retaining declaration JSDoc for editor help.
+- Declared the demo app as ESM so Vite loads its TypeScript config without the CommonJS compatibility warning.
+
 ## 0.1.4 - 2026-08-06
 
 - Ensured `@xapiforge/genapi` installs its supported TypeScript 5.9 runtime instead of inheriting an incompatible TypeScript 7 version from a new consumer project.

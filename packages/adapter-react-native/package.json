@@ -10,7 +10,7 @@
     "url": "git+https://github.com/gzidou/xapiforge.git",
     "directory": "packages/adapter-react-native"
   },
-  "homepage": "https://github.com/gzidou/xapiforge#readme",
+  "homepage": "https://gzidou.github.io/xapiforge/getting-started/react-native",
   "bugs": {
     "url": "https://github.com/gzidou/xapiforge/issues"
   },
@@ -47,7 +47,7 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && pnpm exec tsx ../../scripts/strip-js-comments.ts dist",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist *.tsbuildinfo"
   },

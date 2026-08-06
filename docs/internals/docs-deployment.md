@@ -79,42 +79,31 @@ Actions -> Docs -> Run workflow
 pnpm docs:build
 ```
 
-创建临时 worktree：
+读取远端 `gh-pages` 并创建临时 worktree：
 
 ```bash
-mkdir -p /tmp/xapiforge-gh-pages
-git worktree add --detach /tmp/xapiforge-gh-pages
-cd /tmp/xapiforge-gh-pages
-git switch --orphan gh-pages
+git fetch origin gh-pages
+git worktree add /tmp/xapiforge-gh-pages origin/gh-pages
 ```
 
 清空临时 worktree 并复制产物：
 
 ```bash
 find /tmp/xapiforge-gh-pages -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
-cp -R /path/to/xapiforge/docs/.vitepress/dist/. /tmp/xapiforge-gh-pages/
+cp -R docs/.vitepress/dist/. /tmp/xapiforge-gh-pages/
 touch /tmp/xapiforge-gh-pages/.nojekyll
 ```
 
 提交并推送：
 
 ```bash
-git add -A
-git commit -m "docs: publish site"
-git push origin HEAD:gh-pages
+git -C /tmp/xapiforge-gh-pages add -A
+git -C /tmp/xapiforge-gh-pages commit -m "docs: publish site"
+git -C /tmp/xapiforge-gh-pages push origin HEAD:gh-pages
+git worktree remove /tmp/xapiforge-gh-pages
 ```
 
-如果远端 `gh-pages` 已有新提交，不要直接 `--force`。先读取远端 SHA：
-
-```bash
-git ls-remote --heads origin gh-pages
-```
-
-再用 `--force-with-lease`，并把 `<REMOTE_SHA>` 替换成上一步查到的值：
-
-```bash
-git push --force-with-lease=gh-pages:<REMOTE_SHA> origin HEAD:gh-pages
-```
+如果 `/tmp/xapiforge-gh-pages` 已经存在，先确认它不是其他任务仍在使用的 worktree，再用 `git worktree remove /tmp/xapiforge-gh-pages` 清理。手工发布不需要 force push；普通 push 失败通常说明远端分支在操作期间又有新提交，应重新 fetch 和构建，而不是覆盖它。
 
 ## 发布后验证
 

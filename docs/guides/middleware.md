@@ -34,7 +34,7 @@
 ## middleware 类型
 
 ```typescript
-import type { Middleware } from "openapi-fetch";
+import type { Middleware } from "@xapiforge/core";
 
 const myMiddleware: Middleware = {
   // 请求前（可选）
@@ -60,7 +60,7 @@ const myMiddleware: Middleware = {
 
 ```typescript
 import { ApiError, RetryableError } from "@xapiforge/core";
-import type { Middleware } from "openapi-fetch";
+import type { Middleware } from "@xapiforge/core";
 
 interface AbpEnvelope<T = unknown> {
   code: number;
@@ -124,7 +124,7 @@ export function createAbpUnwrapMw(authCodes = [40001, 40002, 41001]): Middleware
 
 ```typescript
 import { ApiError, RetryableError } from "@xapiforge/core";
-import type { Middleware } from "openapi-fetch";
+import type { Middleware } from "@xapiforge/core";
 
 interface WechatEnvelope<T = unknown> {
   errcode: number;
@@ -181,7 +181,7 @@ export function createWechatUnwrapMw(): Middleware {
 ## 示例 3：请求日志
 
 ```typescript
-import type { Middleware } from "openapi-fetch";
+import type { Middleware } from "@xapiforge/core";
 
 export function createLogMw(logger: { log: (...a: unknown[]) => void } = console): Middleware {
   return {
@@ -200,7 +200,7 @@ export function createLogMw(logger: { log: (...a: unknown[]) => void } = console
 ## 示例 4：请求改写（加 header）
 
 ```typescript
-import type { Middleware } from "openapi-fetch";
+import type { Middleware } from "@xapiforge/core";
 
 export function createTenantMw(tenantId: string): Middleware {
   return {
@@ -217,23 +217,22 @@ export function createTenantMw(tenantId: string): Middleware {
 不同后端协议用不同 client，middleware 独立配置：
 
 ```typescript
-// 主 API（ABP 协议）
-initApi("default", {
+// 两个 OpenAPI 项目分别生成 createMainClient 和 createWechatClient。
+const mainApi = createMainClient({
   baseURL: "https://api.example.com",
   authService,
   middleware: [createAbpUnwrapMw()]
 });
 
-// 第三方 API（微信协议）
-initApi("wechat", {
+const wechatApi = createWechatClient({
   baseURL: "https://api.weixin.qq.com",
   authService,
   middleware: [createWechatUnwrapMw()]
 });
 
 // 业务代码
-const api = useApi("default");
-const wx = useApi("wechat");
+await mainApi.base.GET("/api/users");
+await wechatApi.base.GET("/cgi-bin/user/info");
 ```
 
 ## 下一步

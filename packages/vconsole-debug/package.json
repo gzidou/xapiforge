@@ -10,7 +10,7 @@
     "url": "git+https://github.com/gzidou/xapiforge.git",
     "directory": "packages/vconsole-debug"
   },
-  "homepage": "https://github.com/gzidou/xapiforge#readme",
+  "homepage": "https://gzidou.github.io/xapiforge/guides/vconsole-debug",
   "bugs": {
     "url": "https://github.com/gzidou/xapiforge/issues"
   },
@@ -47,9 +47,9 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && pnpm exec tsx ../../scripts/strip-js-comments.ts dist",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsc -p tsconfig.json && node --test test/*.test.js",
+    "test": "pnpm build && node --test test/*.test.js",
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "devDependencies": {

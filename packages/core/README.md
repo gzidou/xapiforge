@@ -28,4 +28,4 @@ if (!response.ok) throw new Error(`HTTP ${response.status}`);
 const data = JSON.parse(response.bodyText) as { status: string };
 ```
 
-For OpenAPI-generated clients, authentication, middleware, retry behavior, and data-or-throw error handling, see the [browser onboarding guide](https://github.com/gzidou/xapiforge/blob/main/docs/getting-started/browser.md).
+For OpenAPI-generated clients, authentication, middleware, retry behavior, and data-or-throw error handling, see the [browser onboarding guide](https://gzidou.github.io/xapiforge/getting-started/browser).

@@ -26,4 +26,4 @@ await tokenStore.clear();
 
 Use `secureStorageStore(key)` for sensitive credentials. Use `downloadFileNative(options)` when a large file must be written by the native layer instead of being buffered in the WebView.
 
-See the [Ionic and Capacitor guide](https://github.com/gzidou/xapiforge/blob/main/docs/getting-started/ionic-capacitor.md) for native HTTP and download examples.
+See the [Ionic and Capacitor guide](https://gzidou.github.io/xapiforge/getting-started/ionic-capacitor) for TokenStore, network injection, and download examples.

@@ -230,7 +230,7 @@ export async function generate(opts: GenerateOptions): Promise<GenerateResult> {
   await mkdir(typesDir, { recursive: true });
 
   // hooks 合并策略：service 级覆盖项目级（`svc.hooks ?? config.hooks`）
-  // - 不传 svc.hooks → 用顶层 config.hooks（同公司框架统一场景）
+  // - 不传 svc.hooks → 用顶层 config.hooks（同一后端框架场景）
   // - 传 svc.hooks = {} → 显式禁用所有 hook（跨框架特殊服务场景）
   // - 传 svc.hooks = { transformSwagger: ... } → 仅此 service 用自定义 hook
   const resolveHooks = (svc: ServiceConfig): GenapiHooks | undefined =>

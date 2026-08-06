@@ -8,7 +8,7 @@
     "type": "git",
     "url": "git+https://github.com/gzidou/xapiforge.git"
   },
-  "homepage": "https://github.com/gzidou/xapiforge#readme",
+  "homepage": "https://gzidou.github.io/xapiforge/",
   "bugs": {
     "url": "https://github.com/gzidou/xapiforge/issues"
   },
@@ -35,10 +35,12 @@
     "test:genapi": "pnpm --filter '@xapiforge/genapi' test",
     "test:demo-app": "python3 scripts/test/demo-app-scenarios.py",
     "test:download": "tsx scripts/test/download-native.ts",
-    "publish:check": "pnpm build && pnpm typecheck && npx tsc --noEmit && pnpm format:check && pnpm lint && pnpm test:genapi && pnpm test:scenarios && pnpm test:download",
+    "verify": "pnpm build && pnpm typecheck && npx tsc --noEmit && pnpm format:check && pnpm lint && pnpm test && pnpm test:scenarios && pnpm test:download && pnpm docs:build",
+    "publish:check": "pnpm verify",
     "publish:dry-run": "pnpm publish:check && tsx scripts/publish-packages.ts --target npm --dry-run",
     "publish:local": "pnpm publish:check && tsx scripts/publish-packages.ts --target local --confirm",
     "publish:npm": "pnpm publish:check && tsx scripts/publish-packages.ts --target npm --confirm",
+    "release:version": "tsx scripts/set-version.ts",
     "docs:dev": "vitepress dev docs --port 5174",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs"
@@ -48,6 +50,7 @@
     "@xapiforge/genapi": "workspace:*",
     "@xapiforge/adapter-capacitor": "workspace:*",
     "@types/node": "^24.13.3",
+    "esbuild": "^0.28.1",
     "eslint": "^9.39.5",
     "eslint-config-prettier": "^9.1.2",
     "mermaid": "^10.9.3",

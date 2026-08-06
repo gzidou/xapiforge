@@ -20,6 +20,6 @@ const token = await tokenStore.get();
 await tokenStore.clear();
 ```
 
-Use `sessionStorageStore(key)` for tab-scoped storage or `cookieStore(key, days)` for a same-origin cookie. These adapters access browser globals and must only be called on the client in SSR applications.
+Use `sessionStorageStore(key)` for tab-scoped storage or `cookieStore(key, days)` for a same-origin, JavaScript-readable cookie. `cookieStore` cannot create an HttpOnly cookie and does not add Secure or SameSite attributes; do not treat it as a replacement for a server-managed session cookie. These adapters access browser globals and must only be called on the client in SSR applications.
 
-See the [browser onboarding guide](https://github.com/gzidou/xapiforge/blob/main/docs/getting-started/browser.md) for `AuthService` integration.
+See the [browser onboarding guide](https://gzidou.github.io/xapiforge/getting-started/browser) for `AuthService` integration.

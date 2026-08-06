@@ -27,7 +27,7 @@
  */
 
 import { RetryableError } from "@xapiforge/core";
-import type { Middleware } from "openapi-fetch";
+import type { Middleware } from "@xapiforge/core";
 
 /** ABP envelope 形状 */
 interface AbpEnvelope<T = unknown> {

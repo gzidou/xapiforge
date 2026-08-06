@@ -3,6 +3,8 @@
 Quick reference for AI coding assistants and human contributors working on this monorepo.
 
 > Full docs: `pnpm docs:dev` (VitePress) → http://localhost:5174
+>
+> Maintainer entry: [docs/internals/maintenance.md](./docs/internals/maintenance.md)
 
 ## Core Principles
 
@@ -27,11 +29,14 @@ Package namespace: `@xapiforge/*`. Works with Vue / React / React Native / Ionic
 
 ```bash
 pnpm install
-pnpm build                 # all packages
-pnpm lint                  # root lint
-pnpm format:check
-pnpm docs:dev              # VitePress docs dev
-pnpm test:scenarios        # library-level scenario tests
+pnpm verify                # canonical full validation gate
+pnpm build                 # build all 6 packages
+pnpm test                  # package-level tests
+pnpm test:scenarios        # 222 core scenarios
+pnpm test:download         # 25 native-download scenarios
+pnpm docs:dev              # VitePress docs dev server
+pnpm docs:build            # VitePress production build
+pnpm publish:dry-run       # validate real npm tarballs without publishing
 
 # single package
 pnpm --filter '@xapiforge/core' build
@@ -49,6 +54,7 @@ pnpm generate:api          # generate TS API client (genapi)
 | `packages/core/`                                     | **Core** — HttpClient / AuthService / createNet / middleware chain                        |
 | `packages/adapter-{browser,capacitor,react-native}/` | TokenStore adapters (mutually exclusive, pick one per host)                               |
 | `packages/genapi/`                                   | OpenAPI → TS API client generator + swagger.json download CLI (`xapiforge-fetch` command) |
+| `packages/vconsole-debug/`                           | Optional vConsole diagnostic plugin                                                       |
 | `examples/demo-app/`                                 | Vue 3 full integration demo + browser scenario regression page                            |
 | `scripts/`                                           | Toolchain scripts (mock-server / scenario tests)                                          |
 | `docs/`                                              | VitePress docs (getting-started / guides / internals)                                     |
@@ -121,7 +127,7 @@ For stub/placeholder code hitting `no-unsafe-*` errors, use type annotations or 
 | ----------------------- | ------------------------------------------------------------------------------------- |
 | **pnpm version**        | 9.x                                                                                   |
 | **Node version**        | 24 LTS                                                                                |
-| **CI jobs**             | lint / format:check / build (GitHub Actions `ubuntu-latest`)                          |
+| **CI jobs**             | lint / format / build / test / docs (GitHub Actions `ubuntu-latest`)                  |
 | **Pre-commit**          | `lint:fix + format` (auto-fix what's fixable, build stays on CI)                      |
 | **`--frozen-lockfile`** | Required in CI, no lockfile drift                                                     |
 | **Prettier**            | Markdown tables excluded (see `.prettierrc.json` `overrides: *.md → printWidth: 999`) |
@@ -137,8 +143,7 @@ For stub/placeholder code hitting `no-unsafe-*` errors, use type annotations or 
 ## Verification Checklist (before commit)
 
 ```bash
-pnpm build       # 5 packages
-pnpm lint        # 0 errors
-pnpm format:check
-npx tsc --noEmit  # root scripts (excludes scripts/test/)
+pnpm verify
 ```
+
+`pnpm verify` is the canonical gate. It covers all six package builds, workspace and root type checks, formatting, lint, package tests, 222 core scenarios, 25 native-download scenarios, and the VitePress production build. Before an npm release, run `pnpm publish:dry-run` as well; see the [publishing manual](./docs/internals/publishing.md).

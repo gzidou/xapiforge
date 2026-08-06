@@ -191,7 +191,7 @@ refreshIfNeeded():
 **职责**：创建强类型业务 client，内部注入 auth middleware + 业务 middleware，包装方法加 retry loop。
 
 ```ts
-import type { Middleware } from "openapi-fetch";
+import type { Middleware } from "@xapiforge/core";
 
 export interface NetConfig {
   baseURL: string;

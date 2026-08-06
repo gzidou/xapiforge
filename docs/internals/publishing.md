@@ -1,150 +1,209 @@
-# Publishing packages
+# npm 发布手册
 
-This document is the maintainer runbook for publishing `@xapiforge/*` packages.
+本文给负责发版的人使用。xapiforge 采用人工确认发布：脚本负责按顺序检查和发布六个包，但不会替维护者决定版本号，也不会绕过 npm 的登录和双重验证。
 
-Publishing is intentionally manual. The repository provides scripts to reduce mistakes, but no script should publish to a real registry unless the maintainer explicitly chooses the target and confirms the action.
+正式发布会产生公开且不可复用的 npm 版本。没有明确发布授权时，只执行 dry-run。
 
-## Package set
+## 会发布哪些包
 
-The root package is private and must stay private. Only these workspace packages are publishable:
+根目录的 `xapiforge` 包保持 `private: true`。公开包只有：
 
-| Package                           | Role                                 |
-| --------------------------------- | ------------------------------------ |
-| `@xapiforge/core`                 | HTTP client, auth, middleware core   |
-| `@xapiforge/genapi`               | OpenAPI codegen and CLI              |
-| `@xapiforge/adapter-browser`      | Browser TokenStore adapter           |
-| `@xapiforge/adapter-capacitor`    | Capacitor TokenStore/native adapter  |
-| `@xapiforge/adapter-react-native` | React Native TokenStore adapter      |
-| `@xapiforge/vconsole-debug`       | Framework-agnostic vConsole debugger |
+| 顺序 | 包                                |
+| ---- | --------------------------------- |
+| 1    | `@xapiforge/core`                 |
+| 2    | `@xapiforge/genapi`               |
+| 3    | `@xapiforge/adapter-browser`      |
+| 4    | `@xapiforge/adapter-capacitor`    |
+| 5    | `@xapiforge/adapter-react-native` |
+| 6    | `@xapiforge/vconsole-debug`       |
 
-All scoped packages use `publishConfig.access = "public"`. The registry is not hard-coded in package manifests; the publish script decides it at runtime.
+脚本按这个顺序执行，确保 adapter 发布前，新的 core 已经存在。
 
-Package manifests keep source-adjacent exports for monorepo development. During `pnpm pack` / `pnpm publish`, `publishConfig` overrides the published manifest so npm consumers resolve `dist/index.js` and `dist/index.d.ts`.
+## 三种目标
 
-## Registry switch
+| 命令                   | 是否上传 | 目标                                        |
+| ---------------------- | -------- | ------------------------------------------- |
+| `pnpm publish:dry-run` | 否       | 只打包并检查 npm 文件清单                   |
+| `pnpm publish:local`   | 是       | 本地 registry，默认 `http://localhost:4873` |
+| `pnpm publish:npm`     | 是       | 公共 `https://registry.npmjs.org/`          |
 
-Use `scripts/publish-packages.ts`.
-
-| Target   | Registry source                                                  | Typical use                |
-| -------- | ---------------------------------------------------------------- | -------------------------- |
-| `local`  | `XAPIFORGE_LOCAL_NPM_REGISTRY`, fallback `http://localhost:4873` | Local npm / Verdaccio test |
-| `npm`    | `https://registry.npmjs.org/`                                    | Public npm release         |
-| `custom` | Required `--registry <url>`                                      | Company/private registry   |
-
-Safety rule: dry-run is the default. Real publishing requires `--confirm`.
-
-## Before publishing
-
-Start from a clean repository:
-
-```bash
-git status --short --branch
-```
-
-Run the publish gate:
-
-```bash
-pnpm publish:check
-```
-
-This runs package build, typecheck, formatting, lint, library scenarios, and native download tests. Browser demo regression can be run separately when Playwright is available:
-
-```bash
-pnpm test:demo-app
-```
-
-The publish scripts `publish:dry-run`, `publish:local`, and `publish:npm` run this gate automatically before packing or publishing.
-
-## Local registry test
-
-Start your local npm registry first. For Verdaccio the usual default is:
-
-```bash
-verdaccio
-```
-
-If your local registry is not `http://localhost:4873`, pass it through an environment variable:
+本地 registry 地址可以覆盖：
 
 ```bash
 XAPIFORGE_LOCAL_NPM_REGISTRY=http://localhost:4873 pnpm publish:local
 ```
 
-`pnpm publish:local` performs a real publish to the local registry. It is safe only if the registry points to your local test server.
+## 正式发版步骤
 
-Then test install from a temporary consumer project:
+### 1. 确认分支和改动
+
+```bash
+git status --short --branch
+git pull --ff-only
+```
+
+只从准备发布的 `main` 提交发版。先处理不明的本地改动，不要把临时文件混进版本提交。
+
+### 2. 决定版本号
+
+按照语义化版本选择：
+
+- 修复兼容问题：patch，例如 `0.1.4` → `0.1.5`。
+- 增加向后兼容能力：minor，例如 `0.1.4` → `0.2.0`。
+- 有破坏性修改：major；项目仍处于 `0.x` 时，也必须在 CHANGELOG 明确写出迁移方式。
+
+统一修改根包和六个公开包：
+
+```bash
+pnpm release:version 0.1.5
+```
+
+版本号只是示例。随后编辑 `CHANGELOG.md`，写清使用者能感知的变化、修复和兼容性影响。
+
+### 3. 跑完整门禁
+
+```bash
+pnpm verify
+pnpm publish:dry-run
+```
+
+dry-run 输出的包中应有 `dist/*.js`、`dist/*.d.ts` 和包 README，不应有 source map、源码、测试、内部配置或凭据。
+
+### 关于 source map、注释和“混淆”
+
+xapiforge 是开源库，npm 包中的 JavaScript 不做混淆。混淆无法阻止源码被阅读，反而会让报错堆栈和问题定位变得困难。发布产物采用下面的约定：
+
+- 不发布 source map 和 declaration map；
+- 构建后移除 JavaScript 实现文件中的注释；
+- 保留 `.d.ts` 中的 JSDoc，供编辑器显示参数和返回值说明；
+- 不发布 `src/`、测试、开发配置和本地环境文件。
+
+`pnpm publish:dry-run` 会逐个生成真实的 npm 压缩包并检查这些规则。不要只查看 `dist/` 后凭感觉判断发布内容。
+
+### 4. 先在本地 registry 试装
+
+涉及包入口、依赖、生成器或构建产物时，这一步必须做。先启动 Verdaccio 或现有本地 npm 服务，然后：
+
+```bash
+pnpm publish:local
+```
+
+在一次性目录里安装刚发布的精确版本：
 
 ```bash
 mkdir /tmp/xapiforge-consumer
 cd /tmp/xapiforge-consumer
 pnpm init
-XAPIFORGE_TEST_VERSION=0.1.4
-pnpm add "@xapiforge/core@${XAPIFORGE_TEST_VERSION}" "@xapiforge/adapter-browser@${XAPIFORGE_TEST_VERSION}" --registry http://localhost:4873
-pnpm add -D "@xapiforge/genapi@${XAPIFORGE_TEST_VERSION}" --registry http://localhost:4873
+pnpm add @xapiforge/core@0.1.5 @xapiforge/adapter-browser@0.1.5 --registry http://localhost:4873
+pnpm add -D @xapiforge/genapi@0.1.5 --registry http://localhost:4873
 ```
 
-Always specify the version that was just published. A consumer with pnpm's `minimumReleaseAge` policy may otherwise select an older version even when the local registry's `latest` tag is correct.
+把 `0.1.5` 换成这次版本。不要直接装 `latest`；pnpm 的 `minimumReleaseAge` 策略可能让新发布版本暂时不可选。
 
-For a disposable verification project, prefer a package-scoped exception in `pnpm-workspace.yaml` instead of disabling the policy globally. Replace `0.1.4` with the exact version under test:
+如果一次性项目启用了该策略，可只对本次验证版本加例外：
 
 ```yaml
 minimumReleaseAgeExclude:
-  - "@xapiforge/core@0.1.4"
-  - "@xapiforge/adapter-browser@0.1.4"
-  - "@xapiforge/genapi@0.1.4"
+  - "@xapiforge/core@0.1.5"
+  - "@xapiforge/adapter-browser@0.1.5"
+  - "@xapiforge/genapi@0.1.5"
 ```
 
-If pnpm already created a lockfile before the exception was added, rebuild that disposable lockfile and install again:
+如果例外添加前已经生成了临时锁文件，在这个一次性目录中删除 `pnpm-lock.yaml` 后重新安装。不要把临时例外复制到业务仓库。
+
+### 5. 提交版本改动
+
+确认 diff 只包含本次发版内容，再提交并等待 CI 通过：
 
 ```bash
-pnpm clean --lockfile
-pnpm install
+git diff --check
+git status --short
+git add package.json packages/*/package.json CHANGELOG.md pnpm-lock.yaml
+git commit -m "release: 0.1.5"
+git push origin main
 ```
 
-Do not copy temporary exceptions into a production project without reviewing its supply-chain policy.
+如果 `pnpm-lock.yaml` 没有变化，不需要强行添加。
 
-## Public npm dry-run
+### 6. 确认 npm 登录状态
 
-Always do this before a real public release:
+显式使用公共 registry，避免本机镜像配置干扰：
 
 ```bash
-pnpm publish:dry-run
+npm whoami --registry https://registry.npmjs.org/
 ```
 
-The dry-run packs and validates each package without uploading it.
-
-## Public npm release
-
-Log in first:
+如果未登录：
 
 ```bash
-npm login
-npm whoami
+npm login --registry https://registry.npmjs.org/
 ```
 
-If the account requires two-factor authentication, pass the one-time password:
+npm 目前要求发布账号启用 2FA，或使用允许发布的受限凭据。账号采用安全密钥 / Passkey 时，直接运行发布命令并按浏览器提示确认；它不会提供一个需要手工填写的六位数字。恢复码只用于账号恢复，不要填进 `--otp`，也不要记录在仓库中。
 
-```bash
-pnpm exec tsx scripts/publish-packages.ts --target npm --confirm --otp 123456
-```
+`--otp` 只适用于认证器应用生成的数字动态码。通常让 npm CLI 交互提示更不容易混淆。
 
-Without 2FA:
+### 7. 正式发布
+
+再次确认目标是公共 npm，然后执行：
 
 ```bash
 pnpm publish:npm
 ```
 
-After publishing, verify from a temporary consumer project:
+脚本会重新运行 `pnpm verify`，然后逐包发布。看到 npm 的安全密钥或浏览器确认提示时，按当前账号的 2FA 方式完成验证。
+
+### 8. 验证线上包
+
+不要只看命令最后显示成功。逐包确认精确版本：
 
 ```bash
-mkdir /tmp/xapiforge-npm-consumer
-cd /tmp/xapiforge-npm-consumer
-pnpm init
-pnpm add @xapiforge/core @xapiforge/genapi
+npm view @xapiforge/core@0.1.5 version --registry https://registry.npmjs.org/
+npm view @xapiforge/genapi@0.1.5 version --registry https://registry.npmjs.org/
+npm view @xapiforge/adapter-browser@0.1.5 version --registry https://registry.npmjs.org/
+npm view @xapiforge/adapter-capacitor@0.1.5 version --registry https://registry.npmjs.org/
+npm view @xapiforge/adapter-react-native@0.1.5 version --registry https://registry.npmjs.org/
+npm view @xapiforge/vconsole-debug@0.1.5 version --registry https://registry.npmjs.org/
 ```
 
-## Notes
+再在新的临时项目中从公共 npm 安装 core、一个 adapter 和 genapi，执行一次生成和 TypeScript 构建。这样才能发现 registry 包内容与 monorepo 源码运行方式不同的问题。
 
-- `workspace:*` dependencies are kept in source. pnpm rewrites them to real package versions when packing or publishing workspace packages.
-- Do not commit `.npmrc` with real tokens. Use `.npmrc.example` as a template.
-- Do not publish from a dirty worktree unless you are intentionally testing a local registry.
-- The script publishes packages in dependency-aware order, starting with `@xapiforge/core`.
+### 9. 打 Git tag
+
+六个包和临时试装都确认后再打 tag：
+
+```bash
+git tag v0.1.5
+git push origin v0.1.5
+```
+
+## 发布中途失败
+
+npm 的同名同版本不能重复发布。先用 `npm view <包名>@<版本> version` 查清哪些包已经成功，不要直接修改版本号重来。
+
+如果前几个包已经发布，可以从第一个未发布的包继续：
+
+```bash
+pnpm publish:check
+pnpm exec tsx scripts/publish-packages.ts \
+  --target npm \
+  --confirm \
+  --from @xapiforge/adapter-browser
+```
+
+`--from` 指定的包也会发布。使用前必须确认它和后面的包在 npm 上都还没有该版本。
+
+如果错误发生在包内容或依赖本身，不能覆盖已经发布的版本。修复代码、增加 patch 版本并在 CHANGELOG 说明，再走一遍完整流程。
+
+## 后续可选：Trusted Publishing
+
+npm 支持用 GitHub Actions OIDC 发布，避免保存长期 npm token，并可生成 provenance。配置它会改变公开发布权限和远程 workflow，必须单独评审和授权；当前仓库仍以人工发布为准。
+
+参考 npm 官方文档：[Trusted publishing for npm packages](https://docs.npmjs.com/trusted-publishers/)。
+
+## 安全底线
+
+- 不提交带真实 token 的 `.npmrc`；仓库中的 `.npmrc.example` 只提供字段示例。
+- 不在命令、截图、issue 或日志中记录密码、恢复码、安全密钥信息和 npm token。
+- 不从脏工作区发公共版本。
+- 不使用 `--force` 覆盖 tag，也不尝试复用已经发布过的 npm 版本号。

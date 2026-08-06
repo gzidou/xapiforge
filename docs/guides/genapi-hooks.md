@@ -109,7 +109,7 @@ export interface ServiceConfig {
 
 | 场景                   | 配置                              | 效果                       |
 | ---------------------- | --------------------------------- | -------------------------- |
-| 同公司框架统一（90%）  | 顶层配 hooks，service 不配        | 所有 service 继承顶层 hook |
+| 同一后端框架统一       | 顶层配 hooks，service 不配        | 所有 service 继承顶层 hook |
 | 跨框架特殊服务         | 顶层配 hooks，某 service 配 `{}`  | 该 service 跳过所有 hook   |
 | 混合框架（个别自定义） | 顶层配 hooks，某 service 配自定义 | 该 service 用自己的 hook   |
 
@@ -694,7 +694,7 @@ const hooks = mergeHooks(config.hooks, svc.hooks); // 链式调用
 - 覆盖式：简单 + 跟 `middleware` 字段一致。service 级要完全替代就替代，要禁用就 `{}`。
 - 叠加式：灵活，但 hook 顺序变成隐式契约，调试难。
 
-**选择覆盖式**：90% 场景是同公司框架统一，service 级要么继承要么禁用，不需要叠加。
+**选择覆盖式**：多数项目的 service 使用同一后端框架，service 级要么继承要么禁用，不需要叠加。
 
 ### 6.4 为什么不提供「注册多个 hook」机制
 

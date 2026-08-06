@@ -147,7 +147,7 @@ const user = await api.base.GET("/api/users/{id}", { params: { path: { id } } })
 ```typescript
 // 业务 middleware（ABP envelope 解包）
 import { RetryableError } from "@xapiforge/core";
-import type { Middleware } from "openapi-fetch";
+import type { Middleware } from "@xapiforge/core";
 
 const ABP_AUTH_CODES = new Set([40001, 40002, 41001]);
 

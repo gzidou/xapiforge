@@ -31,7 +31,7 @@ export function sessionStorageStore(key: string): TokenStore {
   };
 }
 
-/** Cookie 实现（同步）。同域 cookie 自动随请求发送。 */
+/** Cookie 实现（同步）。仅适合应用明确允许 JavaScript 读取的同源 cookie。 */
 export function cookieStore(key: string, days = 7): TokenStore {
   return {
     get: (): string | null => readCookie(key),
@@ -45,8 +45,9 @@ export function cookieStore(key: string, days = 7): TokenStore {
 }
 
 function readCookie(name: string): string | null {
-  const m = globalThis.document?.cookie.match(new RegExp("(^| )" + name + "=([^;]*)"));
-  return m ? decodeURIComponent(m[2]!) : null;
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const m = globalThis.document?.cookie.match(new RegExp(`(?:^|;\\s*)${escapedName}=([^;]*)`));
+  return m ? decodeURIComponent(m[1]!) : null;
 }
 
 function writeCookie(name: string, value: string, days: number): void {

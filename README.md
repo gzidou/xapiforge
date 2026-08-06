@@ -1,81 +1,106 @@
 # xapiforge
 
 [![CI](https://github.com/gzidou/xapiforge/actions/workflows/ci.yml/badge.svg)](https://github.com/gzidou/xapiforge/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![pnpm 9](https://img.shields.io/badge/pnpm-9-orange.svg)](https://pnpm.io/)
-[![Node 24](https://img.shields.io/badge/node-24 LTS-green.svg)](https://nodejs.org/)
+[![npm: @xapiforge/core](https://img.shields.io/npm/v/%40xapiforge%2Fcore)](https://www.npmjs.com/package/@xapiforge/core)
+[![Documentation](https://img.shields.io/badge/docs-GitHub%20Pages-blue)](https://gzidou.github.io/xapiforge/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](./LICENSE)
 
-Framework-agnostic HTTP client + OpenAPI codegen toolkit. One `@xapiforge/core` package works across Vue / React / React Native / Ionic.
+xapiforge 根据 OpenAPI 文档生成 TypeScript 客户端，并统一处理鉴权、重试、错误和业务 middleware。核心代码不依赖 Vue、React 等 UI 框架，同一套客户端可以用在浏览器、Ionic / Capacitor 和 React Native 项目中。
 
-## Features
+完整文档：[https://gzidou.github.io/xapiforge/](https://gzidou.github.io/xapiforge/)
 
-- **API Codegen** — Generate typed TypeScript API clients from OpenAPI/Swagger specs (`@xapiforge/genapi`)
-- **Token Refresh** — Single-flight + window guard + timeout, built into the core (`@xapiforge/core`)
-- **Framework-agnostic** — Zero framework deps. Pick a TokenStore adapter per runtime (browser / Capacitor / RN)
-- **Middleware Chain** — Business-side envelope unwrapping via middleware, no library lock-in
-- **File Download** — Progress callback + filename extraction + stream support
-- **Retry & Backoff** — 429 Retry-After + 5xx exponential backoff, configurable
-- **Business Debugging** — Framework-agnostic vConsole diagnostics, Storage snapshots, redaction, and safe actions
+## 先选需要的包
 
-## Packages
+| 包                                | 什么时候使用                                                      |
+| --------------------------------- | ----------------------------------------------------------------- |
+| `@xapiforge/core`                 | 必选。提供 `HttpClient`、`AuthService`、`createNet` 和 middleware |
+| `@xapiforge/genapi`               | 开发依赖。下载 OpenAPI 文档并生成 TypeScript 客户端               |
+| `@xapiforge/adapter-browser`      | 浏览器项目的 localStorage、sessionStorage 和 cookie TokenStore    |
+| `@xapiforge/adapter-capacitor`    | Capacitor 的 TokenStore 和原生文件下载                            |
+| `@xapiforge/adapter-react-native` | React Native 的 Keychain / EncryptedStorage TokenStore            |
+| `@xapiforge/vconsole-debug`       | 可选的移动端业务诊断面板                                          |
 
-| Package                                                               | Description                                                             |
-| --------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| [`@xapiforge/core`](./packages/core/)                                 | Core: HttpClient + AuthService + createNet + middleware chain           |
-| [`@xapiforge/adapter-browser`](./packages/adapter-browser/)           | Browser TokenStore (localStorage / sessionStorage)                      |
-| [`@xapiforge/adapter-capacitor`](./packages/adapter-capacitor/)       | Capacitor TokenStore + native HTTP + file download                      |
-| [`@xapiforge/adapter-react-native`](./packages/adapter-react-native/) | RN TokenStore (Keychain / EncryptedStorage)                             |
-| [`@xapiforge/genapi`](./packages/genapi/)                             | OpenAPI → TypeScript API client generator + swagger.json download CLI   |
-| [`@xapiforge/vconsole-debug`](./packages/vconsole-debug/)             | Framework-agnostic vConsole business diagnostics and safe debug actions |
+不要一次安装所有 adapter。按照应用的运行环境选择一个即可。
 
-## Quick Start
+## 浏览器项目快速接入
+
+下面以已有的 Vue、React 或其他浏览器项目为例。项目需要 Node.js 20.19+、pnpm 9+，并且后端可以提供 OpenAPI 3.x 文档。
+
+```bash
+pnpm add @xapiforge/core @xapiforge/adapter-browser
+pnpm add -D @xapiforge/genapi
+```
+
+在项目根目录创建 `xapiforge.config.ts`：
+
+```typescript
+import { defineConfig } from "@xapiforge/genapi";
+
+export default defineConfig({
+  defaultPath: "/swagger/v1/swagger.json",
+  timeoutMs: 15_000,
+  outputDir: "swagger",
+  genOutputDir: "src/api",
+  mode: "online",
+  projects: [
+    {
+      name: "myapp",
+      displayName: "My Application",
+      baseHost: "http://localhost:7001",
+      services: [{ name: "base", displayName: "Base API", port: 7001 }]
+    }
+  ]
+});
+```
+
+在应用的 `package.json` 中加入：
+
+```json
+{
+  "scripts": {
+    "download-swagger": "xapiforge-fetch",
+    "generate:api": "xapiforge"
+  }
+}
+```
+
+然后生成客户端：
+
+```bash
+pnpm download-swagger
+pnpm generate:api myapp
+```
+
+下一步按[浏览器应用接入](https://gzidou.github.io/xapiforge/getting-started/browser)创建 `AuthService` 并初始化生成的客户端。Capacitor 和 React Native 项目先看[接入方式选择](https://gzidou.github.io/xapiforge/getting-started/)；它们的代码生成步骤相同，只是网络和 TokenStore 适配方式不同。
+
+## 示例项目
+
+`examples/demo-app` 是 Vue 3 示例，同时承载浏览器回归场景：
 
 ```bash
 pnpm install
-pnpm build          # build all packages
-pnpm docs:dev       # start docs site (VitePress, port 5174)
+pnpm mock
+pnpm --filter '@xapiforge/example-demo-app' dev
 ```
 
-See the [browser integration guide](./docs/getting-started/browser.md) for a full walkthrough.
+浏览器打开 `http://localhost:5173`。场景说明见[验证指南](https://gzidou.github.io/xapiforge/internals/validation)。
 
-## Examples
+## 参与开发与维护
 
-- [`examples/demo-app`](./examples/demo-app/) — Vue 3 integration demo with a one-click scenario regression page
-
-## Documentation
-
-| Section                                              | Audience    | Content                                                            |
-| ---------------------------------------------------- | ----------- | ------------------------------------------------------------------ |
-| [Getting Started](./docs/getting-started/browser.md) | Integrators | Step-by-step integration                                           |
-| [Guides](./docs/guides/auth.md)                      | Developers  | Auth / middleware / download / error handling / vConsole debugging |
-| [Internals](./docs/internals/architecture-v0.2.md)   | Maintainers | Architecture / scenarios / backend protocols                       |
-| [Publishing](./docs/internals/publishing.md)         | Maintainers | Manual npm/local-registry publishing runbook                       |
-
-Release history is recorded in [CHANGELOG.md](./CHANGELOG.md).
-
-Local docs: `pnpm docs:dev` → http://localhost:5174
-
-## Scripts
+第一次拉取仓库：
 
 ```bash
-pnpm build           # build all packages
-pnpm lint            # ESLint strict mode
-pnpm format:check    # Prettier check
-pnpm test:scenarios  # library-level scenario tests
-pnpm test:demo-app   # browser-level scenario regression (requires mock + demo-app dev)
-pnpm publish:check   # pre-publish verification gate
-pnpm publish:dry-run # npm publish dry-run
-pnpm publish:local   # publish to local npm registry (default http://localhost:4873)
-pnpm publish:npm     # publish to public npm registry
-pnpm mock            # start local mock-server (port 8787)
-pnpm docs:dev        # VitePress dev server
-pnpm docs:build      # VitePress production build
+pnpm install --frozen-lockfile
+pnpm verify
 ```
 
-## Requirements
+`pnpm verify` 会运行构建、类型检查、格式检查、lint、包测试、场景回归、原生下载测试和文档构建。提交前应保证它完整通过。
 
-- Node.js 20.19+ (24 LTS recommended)
-- pnpm 9+
+- [贡献说明](./CONTRIBUTING.md)
+- [维护入口](./docs/internals/maintenance.md)
+- [npm 发布手册](./docs/internals/publishing.md)
+- [文档站部署手册](./docs/internals/docs-deployment.md)
+- [版本记录](./CHANGELOG.md)
 
 ## License
 

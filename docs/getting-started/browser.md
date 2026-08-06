@@ -25,7 +25,7 @@ pnpm add @xapiforge/core @xapiforge/adapter-browser --registry http://localhost:
 pnpm add -D @xapiforge/genapi --registry http://localhost:4873
 ```
 
-使用者不需要单独安装 `openapi-typescript`。它是 `@xapiforge/genapi` 的内部依赖。
+使用者不需要单独安装 `openapi-typescript` 或 `openapi-fetch`。前者由 `@xapiforge/genapi` 管理，后者由 `@xapiforge/core` 管理。
 
 ### 2. 创建 xapiforge.config.ts
 
@@ -138,6 +138,8 @@ export const api = createMyappClient({
 
 如果接口不需要鉴权，TokenStore 中保持为空即可；客户端不会添加 `Authorization`。生成客户端仍要求传入 `AuthService`，以保证需要鉴权时可以直接启用同一套行为。
 
+浏览器 adapter 还提供 `sessionStorageStore` 和 `cookieStore`。`cookieStore` 创建的是 JavaScript 可读 cookie，不能设置 HttpOnly，也不会自动添加 Secure / SameSite；需要服务端会话安全属性时，应由后端通过 `Set-Cookie` 管理，不要用它代替。
+
 ### 5. 发出第一个强类型请求
 
 在 Vue 组件中直接使用：
@@ -163,6 +165,8 @@ onMounted(async () => {
 这里的 service 名 `base` 和路径 `/api/health` 都来自 swagger.json。路径、参数或请求体写错时，TypeScript 会在构建阶段报错。
 
 到这里，最小接入已经完成。
+
+`GET` 在 HTTP 或网络失败时会抛出 `ApiError` / `NetworkError`，生产页面应在加载状态之外补上 `try/catch`、用户可读提示和重试入口，详见[错误处理](../guides/error-handling.md)。
 
 ## 生产环境增强
 

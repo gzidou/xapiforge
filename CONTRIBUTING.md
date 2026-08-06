@@ -10,22 +10,19 @@ Thanks for your interest in contributing! This guide covers the basics.
 ## Setup
 
 ```bash
-git clone <repo-url>
+git clone https://github.com/gzidou/xapiforge.git
 cd xapiforge
-pnpm install
-pnpm build          # build all packages
+pnpm install --frozen-lockfile
+pnpm verify
 ```
 
 ## Development Workflow
 
 1. Create a branch: `git checkout -b feat/your-feature`
 2. Make changes
-3. Run verification:
+3. Run the complete verification gate:
    ```bash
-   pnpm lint           # ESLint strict
-   pnpm format:check   # Prettier
-   pnpm build          # all packages build
-   npx tsc --noEmit    # root scripts typecheck
+   pnpm verify
    ```
 4. Commit with a clear message
 5. Open a PR
@@ -48,8 +45,9 @@ pnpm test:scenarios    # library-level scenario tests
 pnpm mock              # start mock-server (port 8787)
 ```
 
-For browser-level regression checks, run `pnpm mock`, start `examples/demo-app`, then run
-`pnpm test:demo-app` or open `/scenarios` and click "Run All".
+For browser-level regression checks, run `pnpm mock`, start `examples/demo-app`, then run `pnpm test:demo-app` or open `/scenarios` and click "Run All". The automated command requires Python Playwright and Chromium; see the [validation guide](./docs/internals/validation.md) for setup.
+
+Maintainers responsible for releases, CI, or documentation should start with the [maintenance guide](./docs/internals/maintenance.md).
 
 ## Adding a New Package
 

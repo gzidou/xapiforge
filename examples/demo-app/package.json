@@ -2,6 +2,7 @@
   "name": "@xapiforge/example-demo-app",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "description": "验证项目 — Vue 3 + @xapiforge/core + @xapiforge/genapi 全链路接入示例",
   "scripts": {
     "dev": "vite",
@@ -29,7 +30,6 @@
   "devDependencies": {
     "@vitejs/plugin-vue": "^6.0.8",
     "@xapiforge/genapi": "workspace:*",
-    "openapi-fetch": "^0.17",
     "typescript": "^5.9.3",
     "vite": "^8.2.0",
     "vue-tsc": "^3.3.8"

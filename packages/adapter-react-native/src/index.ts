@@ -62,6 +62,9 @@ export function keychainStore(opts: { service: string }): TokenStore {
  *
  * 适合 access_token / refresh_token 等敏感凭证（Android 加密存储）。
  * iOS 上优先用 keychainStore（Keychain 更安全）。
+ *
+ * @deprecated 上游 react-native-encrypted-storage 已归档。新项目优先使用 keychainStore；
+ * 此适配器仅用于兼容已经依赖该库的应用。
  */
 export function encryptedStorageStore(key: string): TokenStore {
   return {

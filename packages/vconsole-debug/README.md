@@ -45,4 +45,4 @@ vConsole.addPlugin(
 
 Initialize it only behind an explicit debug switch. Sensitive values are masked before rendering and copying.
 
-See the [vConsole debug guide](https://github.com/gzidou/xapiforge/blob/main/docs/guides/vconsole-debug.md) for actions, storage cleanup, and security guidance.
+See the [vConsole debug guide](https://gzidou.github.io/xapiforge/guides/vconsole-debug) for actions, storage cleanup, and security guidance.

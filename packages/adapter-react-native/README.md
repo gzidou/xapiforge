@@ -19,6 +19,6 @@ const token = await tokenStore.get();
 await tokenStore.clear();
 ```
 
-Alternatively, install `react-native-encrypted-storage` and use `encryptedStorageStore(key)`. The host application owns these native dependencies so it can choose versions compatible with its React Native runtime.
+`encryptedStorageStore(key)` remains available for existing applications that already use `react-native-encrypted-storage`. Its upstream repository is archived, so new integrations should prefer `keychainStore`. The host application owns native dependency versions and the migration decision.
 
-See the [React Native guide](https://github.com/gzidou/xapiforge/blob/main/docs/getting-started/react-native.md) for `AuthService` and generated-client integration.
+See the [React Native guide](https://gzidou.github.io/xapiforge/getting-started/react-native) for `AuthService` and generated-client integration.

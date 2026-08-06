@@ -1,6 +1,6 @@
 # 验证指南
 
-> v0.2 场景验证的**可重复执行入口**汇总。改了代码后，按本文档跑一遍即可回归。
+本文记录仓库当前可重复执行的验证入口。提交前直接运行 `pnpm verify`；定位问题时再按下面的层级单独运行。
 
 对应场景清单见 [scenarios.md](./scenarios.md)（97 个场景）和行为契约 [behavior-contract.md](./behavior-contract.md)。
 
@@ -8,10 +8,10 @@
 
 ## 两层验证体系
 
-| 层级          | 范围                                              | 工具        | 命令                  | 自动化    |
-| ------------- | ------------------------------------------------- | ----------- | --------------------- | --------- |
-| **L1 库层**   | HttpClient / AuthService / middleware / createNet | Node + tsx  | `pnpm test:scenarios` | ✅ 全自动 |
-| **L2 端到端** | demo-app 页面 + 浏览器 + mock-server              | 人 + 浏览器 | 见下文                | ❌ 手动   |
+| 层级          | 范围                                              | 工具              | 命令                  | 自动化    |
+| ------------- | ------------------------------------------------- | ----------------- | --------------------- | --------- |
+| **L1 库层**   | HttpClient / AuthService / middleware / createNet | Node + tsx        | `pnpm test:scenarios` | ✅ 全自动 |
+| **L2 端到端** | demo-app 页面 + 浏览器 + mock-server              | Playwright 或人工 | `pnpm test:demo-app`  | 半自动    |
 
 **改代码后回归顺序**：L1 → （改了 demo-app 业务代码时）L2。
 
@@ -30,7 +30,7 @@ pnpm test:scenarios
 
 - 自动起停 mock-server（已运行则复用，未运行则拉子进程，跑完自动 kill）
 - 直接 `import @xapiforge/core`，不依赖浏览器
-- 7 个 Section 共 **93 个断言**，对应 SCENARIOS.md 93/97 场景
+- 9 个 Section 共 **222 个断言**；场景与断言不是一一对应，一个场景可能包含多个检查
 - 覆盖：HttpClient HTTP 层 / middleware 单元 / AuthService 单飞+窗口 / C1-C10 envelope 变体 / 429 重试 / A14 业务 200 鉴权码 / A16+D2+D7 端到端鉴权 / B19 文件下载
 
 **期望输出**：
@@ -54,7 +54,10 @@ target: http://localhost:8787
   → D7 refresh 超时 → AuthError 端到端通过 ✅
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-✅ Passed: 93
+━━━ Section 8: client.request 走内核（无 schema）━━━
+━━━ Section 9: 文件下载走内核（progress + 文件名 + auth）━━━
+
+✅ Passed: 222
 ❌ Failed: 0
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -69,7 +72,7 @@ target: http://localhost:8787
 
 ---
 
-## L2：浏览器端到端验证（手动）
+## L2：浏览器端到端验证
 
 **适用**：改了 demo-app 业务代码（[abp-unwrap-mw.ts](../../examples/demo-app/src/middleware/abp-unwrap-mw.ts) / [main.ts](../../examples/demo-app/src/main.ts) / 页面）后跑。
 
@@ -83,6 +86,16 @@ pnpm mock
 pnpm --filter '@xapiforge/example-demo-app' dev
 # 打开 http://localhost:5173
 ```
+
+自动执行需要本机已经安装 Python Playwright 和 Chromium：
+
+```bash
+python3 -m pip install playwright
+python3 -m playwright install chromium
+pnpm test:demo-app
+```
+
+`test:demo-app` 不负责启动 mock-server 和 Vite；两个服务都要保持运行。没有 Python Playwright 时，可以打开 `/scenarios` 后点击 `Run All`，按下表人工核对。
 
 ### 场景清单
 
@@ -167,34 +180,20 @@ await window.__api.base.GET("/api/identity/users");
 
 ## CI 集成
 
-`.github/workflows/ci.yml` 已有 3 个 job：lint / format:check / build（swagger 验证已迁至业务项目本地）。
-
-**建议加第 4 个 job**：
-
-```yaml
-test:scenarios:
-  runs-on: ubuntu-latest
-  steps:
-    - uses: actions/checkout@v4
-    - uses: pnpm/action-setup@v4
-      with: { version: 9 }
-    - uses: actions/setup-node@v4
-      with: { node-version: 24, cache: pnpm }
-    - run: pnpm install --frozen-lockfile
-    - run: pnpm build
-    - run: pnpm test:scenarios
-```
+`.github/workflows/ci.yml` 在 pull request 和 `main` 推送时运行 lint、format、build、test 和 docs 五类 job。`test` job 包含包测试、`test:scenarios` 和 `test:download`；浏览器测试依赖额外的 Playwright 环境，目前仍由维护者在涉及 demo 改动时执行。
 
 ---
 
 ## 提交前验证清单
 
 ```bash
-pnpm build              # 6 packages 编译
-pnpm lint               # 0 errors
-pnpm format:check       # Prettier 通过
-pnpm test:scenarios     # 库层 93 断言通过
-cd examples/demo-app && pnpm download-swagger --only demo --dry-run # swagger 下载干跑（可选）
+pnpm verify
+```
+
+涉及 demo 页面时，再启动 mock 和 demo 后运行：
+
+```bash
+pnpm test:demo-app
 ```
 
 ---
@@ -210,7 +209,7 @@ A: L2 走真实浏览器 + demo-app，可能是 demo-app 业务侧代码（如 `
 **Q: 加了新场景怎么补测试？**
 A:
 
-1. 库层场景 → 在 `test-scenarios.ts` 加断言
-2. mock 端点不够 → 在 `mock-server.ts` 的 `handleTestEndpoint` 加 case
+1. 库层场景 → 在 `scripts/test/scenarios.ts` 加断言
+2. mock 端点不够 → 在 `scripts/mock-server.ts` 的 `handleTestEndpoint` 加 case
 3. 端到端场景 → 在 `VALIDATION.md` 的 L2 场景清单加一行
-4. 更新 `SCENARIOS.md` 和 `BEHAVIOR-CONTRACT.md` 的覆盖表
+4. 更新 `docs/internals/scenarios.md` 和 `docs/internals/behavior-contract.md` 的覆盖表

@@ -30,7 +30,7 @@ const mermaidDepsAlias = {
 
 export default withMermaid(
   defineConfig({
-    title: "@xapiforge/core",
+    title: "xapiforge",
     description: "Framework-agnostic HTTP client + API generator",
     base: "/xapiforge/",
     lang: "zh-CN",
@@ -51,9 +51,9 @@ export default withMermaid(
 
     themeConfig: {
       nav: [
-        { text: "接入指南", link: "/getting-started/browser" },
+        { text: "接入指南", link: "/getting-started/" },
         { text: "使用文档", link: "/guides/auth" },
-        { text: "维护文档", link: "/internals/architecture-v0.2" },
+        { text: "维护文档", link: "/internals/maintenance" },
       ],
 
       sidebar: {
@@ -61,6 +61,7 @@ export default withMermaid(
           {
             text: "接入指南",
             items: [
+              { text: "选择接入方式", link: "/getting-started/" },
               { text: "浏览器应用接入", link: "/getting-started/browser" },
               { text: "Ionic / Capacitor 接入", link: "/getting-started/ionic-capacitor" },
               { text: "React Native 接入", link: "/getting-started/react-native" },
@@ -85,6 +86,7 @@ export default withMermaid(
           {
             text: "维护文档",
             items: [
+              { text: "维护入口", link: "/internals/maintenance" },
               { text: "架构设计 (v0.2)", link: "/internals/architecture-v0.2" },
               { text: "三层架构 + fetch 注入", link: "/internals/layered-architecture" },
               { text: "行为合同表", link: "/internals/behavior-contract" },
@@ -100,7 +102,12 @@ export default withMermaid(
         ],
       },
 
-      socialLinks: [{ icon: "github", link: "https://github.com/" }],
+      socialLinks: [{ icon: "github", link: "https://github.com/gzidou/xapiforge" }],
+
+      editLink: {
+        pattern: "https://github.com/gzidou/xapiforge/edit/main/docs/:path",
+        text: "在 GitHub 上修改此页",
+      },
 
       footer: {
         message: "MIT Licensed",

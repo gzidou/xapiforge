@@ -10,6 +10,9 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const DEFAULT_LOCAL_REGISTRY = "http://localhost:4873";
 const NPM_REGISTRY = "https://registry.npmjs.org/";
@@ -28,6 +31,7 @@ interface PublishArgs {
   registry: string;
   tag: string;
   otp: string;
+  fromPackage: string;
   dryRun: boolean;
   confirm: boolean;
   help: boolean;
@@ -44,6 +48,7 @@ function parseArgs(argv: string[]): PublishArgs {
     registry: "",
     tag: "latest",
     otp: "",
+    fromPackage: "",
     dryRun: true,
     confirm: false,
     help: false,
@@ -55,6 +60,7 @@ function parseArgs(argv: string[]): PublishArgs {
     else if (arg === "--registry") out.registry = argv[++i] ?? "";
     else if (arg === "--tag") out.tag = argv[++i] ?? "";
     else if (arg === "--otp") out.otp = argv[++i] ?? "";
+    else if (arg === "--from") out.fromPackage = argv[++i] ?? "";
     else if (arg === "--dry-run") out.dryRun = true;
     else if (arg === "--confirm") {
       out.confirm = true;
@@ -75,8 +81,9 @@ function printHelp(): void {
       "  --target <local|npm|custom>  Select registry target. Default: local",
       "  --registry <url>             Registry URL for custom target",
       "  --tag <tag>                  npm dist-tag. Default: latest",
-      "  --otp <code>                 npm 2FA one-time password",
-      "  --dry-run                    Pack and validate without publishing. Default",
+      "  --otp <code>                 Numeric code from an authenticator app",
+      "  --from <package>             Resume at this package after a partial publish",
+      "  --dry-run                    Create and validate temporary tarballs. Default",
       "  --confirm                    Actually publish to the selected registry",
       "  -h, --help                   Show help",
       "",
@@ -108,6 +115,56 @@ function run(command: string, args: string[]): void {
   }
 }
 
+function capture(command: string, args: string[]): string {
+  const result = spawnSync(command, args, {
+    encoding: "utf8",
+    env: process.env,
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(
+      `${command} ${args.join(" ")} failed with exit code ${result.status ?? 1}\n${result.stderr}`,
+    );
+  }
+  return result.stdout;
+}
+
+function validateTarball(archivePath: string): void {
+  const entries = capture("tar", ["-tzf", archivePath])
+    .split("\n")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+  const forbidden = entries.filter(
+    (entry) =>
+      entry.endsWith(".map") ||
+      entry.includes("/src/") ||
+      entry.includes("/test/") ||
+      entry.includes("/type-tests/") ||
+      entry.endsWith(".tsbuildinfo") ||
+      entry.endsWith("/.npmrc") ||
+      entry.includes("/.env"),
+  );
+  if (forbidden.length > 0) {
+    throw new Error(`Forbidden files in ${archivePath}:\n${forbidden.join("\n")}`);
+  }
+
+  const required = ["package/package.json", "package/README.md", "package/LICENSE"];
+  const missing = required.filter((entry) => !entries.includes(entry));
+  if (!entries.some((entry) => entry.startsWith("package/dist/") && entry.endsWith(".js"))) {
+    missing.push("package/dist/*.js");
+  }
+  if (!entries.some((entry) => entry.startsWith("package/dist/") && entry.endsWith(".d.ts"))) {
+    missing.push("package/dist/*.d.ts");
+  }
+  if (missing.length > 0) {
+    throw new Error(`Required files missing from ${archivePath}: ${missing.join(", ")}`);
+  }
+
+  const sizeKiB = (statSync(archivePath).size / 1024).toFixed(1);
+  console.log(`validated: ${archivePath} (${entries.length} files, ${sizeKiB} KiB)`);
+}
+
 function main(): void {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
@@ -126,7 +183,33 @@ function main(): void {
   console.log(`mode: ${args.dryRun ? "dry-run" : "publish"}`);
   console.log("");
 
-  for (const pkg of PACKAGE_ORDER) {
+  const startIndex = args.fromPackage
+    ? PACKAGE_ORDER.indexOf(args.fromPackage as (typeof PACKAGE_ORDER)[number])
+    : 0;
+  if (startIndex < 0) {
+    throw new Error(`Unsupported --from package: ${args.fromPackage}`);
+  }
+
+  const packages = PACKAGE_ORDER.slice(startIndex);
+  if (args.fromPackage) {
+    console.log(`resume from: ${args.fromPackage}`);
+  }
+
+  const packDirectory = args.dryRun ? mkdtempSync(join(tmpdir(), "xapiforge-pack-")) : "";
+
+  for (const pkg of packages) {
+    console.log(`\n━━━ ${pkg} ━━━`);
+    if (args.dryRun) {
+      const before = new Set(readdirSync(packDirectory));
+      run("pnpm", ["--filter", pkg, "exec", "pnpm", "pack", "--pack-destination", packDirectory]);
+      const archive = readdirSync(packDirectory).find(
+        (file) => file.endsWith(".tgz") && !before.has(file),
+      );
+      if (!archive) throw new Error(`pnpm pack did not create a tarball for ${pkg}`);
+      validateTarball(join(packDirectory, archive));
+      continue;
+    }
+
     const publishArgs = [
       "--filter",
       pkg,
@@ -139,11 +222,14 @@ function main(): void {
       args.tag,
       "--no-git-checks",
     ];
-    if (args.dryRun) publishArgs.push("--dry-run");
     if (args.otp) publishArgs.push("--otp", args.otp);
 
-    console.log(`\n━━━ ${pkg} ━━━`);
     run("pnpm", publishArgs);
+  }
+
+  if (args.dryRun) {
+    rmSync(packDirectory, { recursive: true, force: true });
+    console.log("\nAll package tarballs passed validation; temporary files removed.");
   }
 }
 
