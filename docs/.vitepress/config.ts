@@ -91,6 +91,7 @@ export default withMermaid(
               { text: "场景清单", link: "/internals/scenarios" },
               { text: "验证指南", link: "/internals/validation" },
               { text: "发布手册", link: "/internals/publishing" },
+              { text: "文档站部署", link: "/internals/docs-deployment" },
               { text: "后端协议库", link: "/internals/backend-protocols" },
               { text: "Stream 设计储备", link: "/internals/stream-design" },
               { text: "ABP Swagger 已知坑", link: "/internals/swagger-pitfalls" },
