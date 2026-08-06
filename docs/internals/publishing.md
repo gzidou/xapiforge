@@ -84,13 +84,23 @@ pnpm add -D "@xapiforge/genapi@${XAPIFORGE_TEST_VERSION}" --registry http://loca
 
 Always specify the version that was just published. A consumer with pnpm's `minimumReleaseAge` policy may otherwise select an older version even when the local registry's `latest` tag is correct.
 
-For a disposable local verification project, you may temporarily add this to `pnpm-workspace.yaml` before installing the just-published packages:
+For a disposable verification project, prefer a package-scoped exception in `pnpm-workspace.yaml` instead of disabling the policy globally. Replace `0.1.4` with the exact version under test:
 
 ```yaml
-minimumReleaseAge: 0
+minimumReleaseAgeExclude:
+  - "@xapiforge/core@0.1.4"
+  - "@xapiforge/adapter-browser@0.1.4"
+  - "@xapiforge/genapi@0.1.4"
 ```
 
-Do not copy that relaxation into a production project without reviewing its supply-chain policy.
+If pnpm already created a lockfile before the exception was added, rebuild that disposable lockfile and install again:
+
+```bash
+pnpm clean --lockfile
+pnpm install
+```
+
+Do not copy temporary exceptions into a production project without reviewing its supply-chain policy.
 
 ## Public npm dry-run
 
