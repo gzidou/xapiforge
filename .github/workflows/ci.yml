@@ -34,9 +34,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # pnpm/action-setup reads the exact version from package.json#packageManager.
+      # Do not repeat it here: v4 rejects multiple version sources.
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
 
       - uses: actions/setup-node@v4
         with:
@@ -58,8 +58,6 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
 
       - uses: actions/setup-node@v4
         with:
@@ -81,8 +79,6 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
 
       - uses: actions/setup-node@v4
         with:
