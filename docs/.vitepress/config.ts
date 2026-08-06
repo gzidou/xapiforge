@@ -32,6 +32,7 @@ export default withMermaid(
   defineConfig({
     title: "@xapiforge/core",
     description: "Framework-agnostic HTTP client + API generator",
+    base: "/xapiforge/",
     lang: "zh-CN",
     lastUpdated: true,
     cleanUrls: true,
