@@ -1,6 +1,6 @@
 # xapiforge
 
-[![CI](https://github.com/xapiforge/xapiforge/actions/workflows/ci.yml/badge.svg)](https://github.com/xapiforge/xapiforge/actions/workflows/ci.yml)
+[![CI](https://github.com/gzidou/xapiforge/actions/workflows/ci.yml/badge.svg)](https://github.com/gzidou/xapiforge/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![pnpm 9](https://img.shields.io/badge/pnpm-9-orange.svg)](https://pnpm.io/)
 [![Node 24](https://img.shields.io/badge/node-24 LTS-green.svg)](https://nodejs.org/)
@@ -50,6 +50,8 @@ See the [browser integration guide](./docs/getting-started/browser.md) for a ful
 | [Guides](./docs/guides/auth.md)                      | Developers  | Auth / middleware / download / error handling / vConsole debugging |
 | [Internals](./docs/internals/architecture-v0.2.md)   | Maintainers | Architecture / scenarios / backend protocols                       |
 | [Publishing](./docs/internals/publishing.md)         | Maintainers | Manual npm/local-registry publishing runbook                       |
+
+Release history is recorded in [CHANGELOG.md](./CHANGELOG.md).
 
 Local docs: `pnpm docs:dev` → http://localhost:5174
 

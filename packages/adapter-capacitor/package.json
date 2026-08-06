@@ -1,10 +1,26 @@
 {
   "name": "@xapiforge/adapter-capacitor",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": false,
-  "description": "Ionic Capacitor adapter：@capacitor/preferences / secure-storage 实现的 TokenStore（peer 依赖需用户自行安装）",
+  "description": "Capacitor token-storage and native HTTP adapters for xapiforge",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gzidou/xapiforge.git",
+    "directory": "packages/adapter-capacitor"
+  },
+  "homepage": "https://github.com/gzidou/xapiforge#readme",
+  "bugs": {
+    "url": "https://github.com/gzidou/xapiforge/issues"
+  },
+  "keywords": [
+    "openapi",
+    "capacitor",
+    "ionic",
+    "token-storage",
+    "typescript"
+  ],
   "main": "./dist/index.js",
   "types": "./src/index.ts",
   "exports": {

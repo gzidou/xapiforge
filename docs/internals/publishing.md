@@ -77,7 +77,7 @@ Then test install from a temporary consumer project:
 mkdir /tmp/xapiforge-consumer
 cd /tmp/xapiforge-consumer
 pnpm init
-XAPIFORGE_TEST_VERSION=0.1.2
+XAPIFORGE_TEST_VERSION=0.1.3
 pnpm add "@xapiforge/core@${XAPIFORGE_TEST_VERSION}" "@xapiforge/adapter-browser@${XAPIFORGE_TEST_VERSION}" --registry http://localhost:4873
 pnpm add -D "@xapiforge/genapi@${XAPIFORGE_TEST_VERSION}" --registry http://localhost:4873
 ```

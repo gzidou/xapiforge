@@ -1,10 +1,26 @@
 {
   "name": "@xapiforge/genapi",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": false,
-  "description": "swagger.json → TS API 客户端生成器（基于 openapi-typescript）。通用工具，业务项目自己配 xapiforge.config.ts。",
+  "description": "OpenAPI-to-TypeScript client generator for xapiforge projects",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gzidou/xapiforge.git",
+    "directory": "packages/genapi"
+  },
+  "homepage": "https://github.com/gzidou/xapiforge#readme",
+  "bugs": {
+    "url": "https://github.com/gzidou/xapiforge/issues"
+  },
+  "keywords": [
+    "openapi",
+    "swagger",
+    "typescript",
+    "codegen",
+    "cli"
+  ],
   "main": "./dist/index.js",
   "types": "./src/index.ts",
   "exports": {
