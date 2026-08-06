@@ -77,8 +77,20 @@ Then test install from a temporary consumer project:
 mkdir /tmp/xapiforge-consumer
 cd /tmp/xapiforge-consumer
 pnpm init
-pnpm add @xapiforge/core @xapiforge/genapi --registry http://localhost:4873
+XAPIFORGE_TEST_VERSION=0.1.2
+pnpm add "@xapiforge/core@${XAPIFORGE_TEST_VERSION}" "@xapiforge/adapter-browser@${XAPIFORGE_TEST_VERSION}" --registry http://localhost:4873
+pnpm add -D "@xapiforge/genapi@${XAPIFORGE_TEST_VERSION}" --registry http://localhost:4873
 ```
+
+Always specify the version that was just published. A consumer with pnpm's `minimumReleaseAge` policy may otherwise select an older version even when the local registry's `latest` tag is correct.
+
+For a disposable local verification project, you may temporarily add this to `pnpm-workspace.yaml` before installing the just-published packages:
+
+```yaml
+minimumReleaseAge: 0
+```
+
+Do not copy that relaxation into a production project without reviewing its supply-chain policy.
 
 ## Public npm dry-run
 

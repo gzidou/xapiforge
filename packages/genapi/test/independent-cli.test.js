@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,14 +8,28 @@ import test from "node:test";
 
 const packageDir = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const cliPath = join(packageDir, "dist", "cli.js");
+const fetchCliPath = join(packageDir, "dist", "fetch-cli.js");
 
 test("CLI generates types without consumer-level dependency binaries", async () => {
   const consumerDir = await mkdtemp(join(tmpdir(), "xapiforge-genapi-consumer-"));
   try {
     await mkdir(join(consumerDir, "swagger", "demo"), { recursive: true });
+    const installedPackageDir = join(consumerDir, "node_modules", "@xapiforge", "genapi");
+    await mkdir(installedPackageDir, { recursive: true });
+    await symlink(join(packageDir, "dist"), join(installedPackageDir, "dist"), "dir");
+    await writeFile(
+      join(installedPackageDir, "package.json"),
+      JSON.stringify({
+        name: "@xapiforge/genapi",
+        type: "module",
+        exports: { ".": "./dist/index.js" },
+      }),
+      "utf8",
+    );
     await writeFile(
       join(consumerDir, "xapiforge.config.ts"),
-      `export default {
+      `import { defineConfig } from "@xapiforge/genapi";
+      export default defineConfig({
         defaultPath: "/swagger/v1/swagger.json",
         timeoutMs: 15000,
         outputDir: "swagger",
@@ -27,7 +41,7 @@ test("CLI generates types without consumer-level dependency binaries", async () 
           baseHost: "http://localhost:8787",
           services: [{ name: "base", displayName: "Base API", port: 8787 }]
         }]
-      };`,
+      });`,
       "utf8",
     );
     await writeFile(
@@ -59,14 +73,19 @@ test("CLI generates types without consumer-level dependency binaries", async () 
       "utf8",
     );
 
-    const result = spawnSync(process.execPath, [cliPath, "demo"], {
+    const spawnOptions = {
       cwd: consumerDir,
       encoding: "utf8",
       // The old implementation spawned `npx openapi-typescript`. Restricting PATH
       // proves generation uses the package dependency directly instead of a
       // consumer-level node_modules/.bin entry.
       env: { ...process.env, PATH: "/usr/bin:/bin" },
-    });
+    };
+
+    const fetchResult = spawnSync(process.execPath, [fetchCliPath], spawnOptions);
+    assert.equal(fetchResult.status, 0, `${fetchResult.stdout}\n${fetchResult.stderr}`);
+
+    const result = spawnSync(process.execPath, [cliPath, "demo"], spawnOptions);
 
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     const generated = await readFile(

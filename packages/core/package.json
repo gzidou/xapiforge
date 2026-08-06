@@ -1,6 +1,6 @@
 {
   "name": "@xapiforge/core",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": false,
   "description": "框架无关的公共网络库（fetch 封装、拦截器、token 单飞刷新、业务异常统一）",
   "type": "module",

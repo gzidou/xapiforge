@@ -42,6 +42,7 @@ async function loadConfig(cwd: string): Promise<XApiForgeConfig> {
     const result = await build({
       entryPoints: [tsPath],
       bundle: true,
+      packages: "external",
       format: "esm",
       platform: "node",
       write: false,
