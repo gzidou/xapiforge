@@ -168,6 +168,12 @@ Failed to resolve action download info.
 
 这次排查中，用只有 `index.html + .nojekyll` 的最小页面做过验证。最小页面可以上线，证明仓库 Pages 访问链路是通的。正式文档恢复后，再次触发 Pages build，最终成功。
 
+### 同日 Actions webhook 限流
+
+2026-08-06 22:18 UTC，GitHub 官方仍把 Actions 和 Pages 标记为 `major_outage`。官方事件说明 webhook trigger 正在限流，很多 push 和 pull request 不会生成新的 workflow run。
+
+仓库在这种状态下推送过提交 `54e4136`：GitHub 的仓库事件已经记录该 PushEvent，远端 `main` 也已指向该提交，但提交没有生成 CI 或 Docs run，只出现了排队中的 GitHub Pages check suite。这种“代码已推送、workflow 列表却没有记录”的情况，应先检查 [GitHub Status 事件](https://stspg.io/rcz3fcm83sff)，不要通过反复修改 workflow 或补空提交来碰运气。
+
 ## 如果以后再次失败
 
 按下面顺序查，不要一上来改代码：
@@ -195,6 +201,8 @@ gh run list --repo gzidou/xapiforge --workflow pages-build-deployment --limit 5
 ```bash
 gh run view <RUN_ID> --repo gzidou/xapiforge --log-failed
 ```
+
+5. 如果 push 已存在但没有生成 workflow run，检查 [GitHub Status](https://www.githubstatus.com/) 中 Actions、Webhooks 和 Pages 的状态。服务端正在限流时，保留已验证的提交并等待恢复，不要先改权限或发布配置。
 
 如果日志里是 `Internal Server Error`、`Service Unavailable`、`Failed to resolve action download info`，不要改文档源码，等 GitHub 恢复后重新触发 Pages build：
 
