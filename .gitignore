@@ -1,0 +1,47 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+packages/*/dist/
+examples/*/dist/
+
+# TypeScript incremental
+*.tsbuildinfo
+.tsbuildinfo
+
+# pnpm
+.pnpm-store/
+.pnpm-debug.log*
+
+# eslint / prettier caches
+.eslintcache
+.prettiercache
+.cache/
+
+# logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# env / local overrides
+.env
+.env.local
+
+# generated API clients (output of genapi, not tracked in git)
+# run `pnpm generate:api` to produce; init.ts / index.ts are hand-written, kept
+examples/*/src/api/*
+!examples/*/src/api/init.ts
+!examples/*/src/api/index.ts
+
+.codegraph
+
+# MCP 配置（个人 AI 工具配置，不提交）
+.mcp.json
+
+# tmp/ — local validation artifacts (not tracked)
+tmp/
+
+# VitePress 构建产物
+docs/.vitepress/cache/
+docs/.vitepress/dist/

@@ -1,0 +1,348 @@
+{
+  "openapi": "3.0.1",
+  "info": {
+    "title": "Demo Service API",
+    "description": "Demo OpenAPI spec for @xapiforge examples. Covers mock-server endpoints.",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/connect/token": {
+      "post": {
+        "tags": ["auth"],
+        "summary": "OAuth2 password / refresh_token",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "grant_type": { "type": "string" },
+                  "username": { "type": "string" },
+                  "password": { "type": "string" },
+                  "refresh_token": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "token",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TokenResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/identity/users": {
+      "get": {
+        "tags": ["identity"],
+        "summary": "Get user list (paged)",
+        "parameters": [
+          { "name": "pageIndex", "in": "query", "schema": { "type": "integer" } },
+          { "name": "pageSize", "in": "query", "schema": { "type": "integer" } },
+          { "name": "keyword", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "paged users",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/PagedResultDtoOfUserDto" }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["identity"],
+        "summary": "Create user",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UserCreateDto" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "created",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UserDto" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/identity/users/{id}": {
+      "get": {
+        "tags": ["identity"],
+        "summary": "Get user by id",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "user",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UserDto" }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": ["identity"],
+        "summary": "Update user",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UserUpdateDto" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "updated",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/UserDto" }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": ["identity"],
+        "summary": "Delete user",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "204": { "description": "deleted" }
+        }
+      }
+    },
+    "/api/identity/users/{id}/roles": {
+      "get": {
+        "tags": ["identity"],
+        "summary": "Get user roles",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "roles",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/RoleDto" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/infrastructure/appManagement": {
+      "get": {
+        "tags": ["infrastructure"],
+        "summary": "Get app management config (complex query)",
+        "parameters": [
+          { "name": "module", "in": "query", "schema": { "type": "string" } },
+          { "name": "enabled", "in": "query", "schema": { "type": "boolean" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "config",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AppManagementDto" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/biz-code-expired": {
+      "get": {
+        "tags": ["auth"],
+        "summary": "Demo: business code 40001 (token expired in body)",
+        "responses": {
+          "200": {
+            "description": "biz error in 200 body",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/BizErrorEnvelope" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/fileService/fileEntity/uploading": {
+      "post": {
+        "tags": ["fileService"],
+        "summary": "Multipart upload",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "file": { "type": "string", "format": "binary" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "uploaded",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/FileEntityDto" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/3rd/weather": {
+      "get": {
+        "tags": ["third-party"],
+        "summary": "Third-party weather (custom envelope)",
+        "parameters": [
+          { "name": "city", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "weather",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/3rd/exotic": {
+      "get": {
+        "tags": ["third-party"],
+        "summary": "Exotic envelope demo (code:200 instead of 0)",
+        "responses": {
+          "200": {
+            "description": "exotic",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "TokenResponse": {
+        "type": "object",
+        "properties": {
+          "access_token": { "type": "string" },
+          "refresh_token": { "type": "string" },
+          "token_type": { "type": "string" },
+          "expires_in": { "type": "integer" }
+        }
+      },
+      "UserDto": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "userName": { "type": "string" },
+          "name": { "type": "string", "nullable": true },
+          "surname": { "type": "string", "nullable": true },
+          "email": { "type": "string" },
+          "phoneNumber": { "type": "string", "nullable": true },
+          "isActive": { "type": "boolean" },
+          "creationTime": { "type": "string", "format": "date-time" }
+        }
+      },
+      "UserCreateDto": {
+        "type": "object",
+        "properties": {
+          "userName": { "type": "string" },
+          "name": { "type": "string" },
+          "surname": { "type": "string" },
+          "email": { "type": "string" },
+          "password": { "type": "string" },
+          "phoneNumber": { "type": "string" }
+        }
+      },
+      "UserUpdateDto": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "surname": { "type": "string" },
+          "email": { "type": "string" },
+          "phoneNumber": { "type": "string" }
+        }
+      },
+      "RoleDto": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "isDefault": { "type": "boolean" }
+        }
+      },
+      "PagedResultDtoOfUserDto": {
+        "type": "object",
+        "properties": {
+          "totalCount": { "type": "integer" },
+          "items": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/UserDto" }
+          }
+        }
+      },
+      "AppManagementDto": {
+        "type": "object",
+        "properties": {
+          "version": { "type": "string" },
+          "modules": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      },
+      "FileEntityDto": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "size": { "type": "integer" },
+          "contentType": { "type": "string" }
+        }
+      },
+      "BizErrorEnvelope": {
+        "type": "object",
+        "properties": {
+          "code": { "type": "integer" },
+          "data": { "type": "object", "nullable": true },
+          "message": { "type": "string", "nullable": true }
+        }
+      }
+    }
+  }
+}

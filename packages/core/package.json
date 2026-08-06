@@ -1,0 +1,31 @@
+{
+  "name": "@xapiforge/core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "框架无关的公共网络库（fetch 封装、拦截器、token 单飞刷新、业务异常统一）",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.type-tests.json --noEmit",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "openapi-fetch": "^0.17",
+    "openapi-typescript-helpers": "^0.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

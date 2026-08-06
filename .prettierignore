@@ -1,0 +1,11 @@
+node_modules/
+dist/
+coverage/
+tmp/
+packages/*/dist/
+examples/*/dist/
+examples/*/swagger/
+*.tsbuildinfo
+docs/.vitepress/cache/
+docs/.vitepress/dist/
+pnpm-lock.yaml

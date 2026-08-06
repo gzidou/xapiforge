@@ -1,0 +1,12 @@
+#!/usr/bin/env sh
+# husky pre-commit hook
+#
+# 设计：只跑 ESLint --fix + Prettier（快速、可幂等）。
+# 完整 lint / build / swagger 留给 GitHub Actions CI（PR 时跑全套）。
+#
+# 设计取舍：
+#   - 不跑 build：commit 时 1-2 分钟太长，会让人想 --no-verify
+#   - 不跑 lint：--fix 已经修了能修的，剩下的留给 CI 拦截
+#   - 不跑 download-swagger：依赖网络和外部服务，CI 跑更合适
+
+pnpm lint:fix && pnpm format

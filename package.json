@@ -1,0 +1,45 @@
+{
+  "name": "xapiforge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Framework-agnostic HTTP client + API codegen from OpenAPI specs",
+  "packageManager": "pnpm@9.0.0",
+  "scripts": {
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "build": "pnpm -r --filter \"./packages/*\" build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "clean": "pnpm -r --filter \"./packages/*\" clean",
+    "mock": "tsx scripts/mock-server.ts",
+    "mock:stop": "test -f /tmp/demo-mock.pid && kill $(cat /tmp/demo-mock.pid) && rm /tmp/demo-mock.pid || echo 'no mock running'",
+    "test:scenarios": "tsx scripts/test/scenarios.ts",
+    "test:demo-app": "python3 scripts/test/demo-app-scenarios.py",
+    "test:download": "tsx scripts/test/download-native.ts",
+    "docs:dev": "vitepress dev docs --port 5174",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@xapiforge/genapi": "workspace:*",
+    "@xapiforge/adapter-capacitor": "workspace:*",
+    "@types/node": "^24.13.3",
+    "eslint": "^9.39.5",
+    "eslint-config-prettier": "^9.1.2",
+    "mermaid": "^10.9.3",
+    "openapi-typescript": "^7",
+    "prettier": "^3.9.6",
+    "tsx": "^4.23.1",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.65.0",
+    "vitepress": "^1.6.4",
+    "vitepress-plugin-mermaid": "^2.0.17"
+  },
+  "engines": {
+    "node": ">=20.19",
+    "pnpm": ">=9"
+  }
+}

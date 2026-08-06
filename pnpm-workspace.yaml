@@ -1,0 +1,7 @@
+packages:
+  - "packages/*"
+  - "examples/*"
+
+# 默认 isolated 模式：每个子包 node_modules/@xapiforge/* 自动有 symlink 到源码。
+# TS 用 moduleResolution: Node16 自动走 symlink，无需 paths 配置。
+# apis/ 已移至 tmp/（验证产物，gitignored），不再是 workspace 包

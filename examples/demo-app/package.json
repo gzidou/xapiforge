@@ -1,0 +1,37 @@
+{
+  "name": "@xapiforge/example-demo-app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "验证项目 — Vue 3 + @xapiforge/core + @xapiforge/genapi 全链路接入示例",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "typecheck": "vue-tsc --noEmit",
+    "download-swagger": "xapiforge-fetch",
+    "generate:api": "xapiforge demo"
+  },
+  "dependencies": {
+    "@xapiforge/core": "workspace:*",
+    "@xapiforge/adapter-browser": "workspace:*"
+  },
+  "peerDependencies": {
+    "vue": "*",
+    "vue-router": "*"
+  },
+  "peerDependenciesMeta": {
+    "vue": {
+      "optional": true
+    },
+    "vue-router": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.8",
+    "@xapiforge/genapi": "workspace:*",
+    "openapi-fetch": "^0.17",
+    "typescript": "^5.9.3",
+    "vite": "^8.2.0",
+    "vue-tsc": "^3.3.8"
+  }
+}

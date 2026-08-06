@@ -1,0 +1,10 @@
+{
+  // 保存 .md 文件时不触发任何 formatter（保留你的原样）
+  "[markdown]": {
+    "editor.defaultFormatter": null,
+    "editor.formatOnSave": false
+  },
+  // 其他文件仍然用 prettier
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "editor.formatOnSave": true
+}
