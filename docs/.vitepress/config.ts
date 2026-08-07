@@ -89,6 +89,7 @@ export default withMermaid(
             items: [
               { text: "维护入口", link: "/internals/maintenance" },
               { text: "架构设计 (v0.2)", link: "/internals/architecture-v0.2" },
+              { text: "genapi v2 设计基线", link: "/internals/genapi-v2-design" },
               { text: "三层架构 + fetch 注入", link: "/internals/layered-architecture" },
               { text: "行为合同表", link: "/internals/behavior-contract" },
               { text: "场景清单", link: "/internals/scenarios" },
