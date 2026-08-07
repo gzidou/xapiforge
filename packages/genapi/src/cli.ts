@@ -19,7 +19,7 @@
  * - projectId  从 CLI 参数取（必填）；all 表示全部生成
  */
 
-import { generate, validateConfig, type XApiForgeConfig } from "./index.js";
+import { generateMany, validateConfig, type XApiForgeConfig } from "./index.js";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -105,6 +105,7 @@ function printHelp(): void {
       "  --swaggerDir <dir>    swagger.json 根目录（默认从 xapiforge.config.ts.outputDir 读）",
       "  --outputDir <dir>     生成产物根目录（默认从 xapiforge.config.ts.genOutputDir 读，否则 'src/api/gen'）",
       "  --no-types            跳过 api-types.ts（业务侧调试时用，默认生成）",
+      "  --check               只比较生成结果；有漂移返回非 0，不写文件",
       "  -h, --help            显示帮助",
     ].join("\n"),
   );
@@ -116,6 +117,7 @@ interface ParsedCli {
   /** 未被 --outputDir 覆盖时是空字符串（fallback 用 config.genOutputDir ?? "src/api/gen"） */
   outputDir: string;
   noTypes: boolean;
+  check: boolean;
   help: boolean;
 }
 
@@ -125,16 +127,34 @@ function parseCli(argv: string[]): ParsedCli {
     swaggerDir: "",
     outputDir: "",
     noTypes: false,
+    check: false,
     help: false,
+  };
+  const positionals: string[] = [];
+  const readValue = (option: string, index: number): string => {
+    const value = argv[index + 1];
+    if (value === undefined || value.startsWith("-")) {
+      throw new Error(`${option} 缺少参数值`);
+    }
+    return value;
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     if (a === "-h" || a === "--help") out.help = true;
-    else if (a === "--swaggerDir") out.swaggerDir = argv[++i] ?? "";
-    else if (a === "--outputDir") out.outputDir = argv[++i] ?? "";
-    else if (a === "--no-types") out.noTypes = true;
-    else if (!a.startsWith("--")) out.arg = a;
+    else if (a === "--") continue;
+    else if (a === "--swaggerDir") {
+      out.swaggerDir = readValue(a, i);
+      i += 1;
+    } else if (a === "--outputDir") {
+      out.outputDir = readValue(a, i);
+      i += 1;
+    } else if (a === "--no-types") out.noTypes = true;
+    else if (a === "--check") out.check = true;
+    else if (a.startsWith("-")) throw new Error(`未知参数：${a}`);
+    else positionals.push(a);
   }
+  if (positionals.length > 1) throw new Error(`只能指定一个 project：${positionals.join(", ")}`);
+  out.arg = positionals[0] ?? "";
   return out;
 }
 
@@ -149,6 +169,9 @@ async function main(): Promise<void> {
   validateConfig(config);
 
   if (cli.arg === "list") {
+    if (cli.swaggerDir || cli.outputDir || cli.noTypes || cli.check) {
+      throw new Error("list 不接受生成选项");
+    }
     console.log("xapiForgeConfig.projects:");
     for (const p of config.projects) {
       console.log(`  - ${p.name} (${p.displayName}): ${p.services.length} services`);
@@ -168,27 +191,32 @@ async function main(): Promise<void> {
   const outputDir = cli.outputDir || config.genOutputDir || "src/api/gen";
   const swaggerDir = cli.swaggerDir || config.outputDir;
 
+  const results = await generateMany(
+    targets.map((project) => ({
+      xapiForgeConfig: config,
+      projectId: project.name,
+      swaggerDir,
+      outputDir,
+      emitApiTypes: !cli.noTypes,
+      check: cli.check,
+      hooks: config.hooks,
+    })),
+  );
+
   let totalFiles = 0;
   let totalEndpoints = 0;
-  for (const project of targets) {
-    try {
-      const r = await generate({
-        xapiForgeConfig: config,
-        projectId: project.name,
-        swaggerDir,
-        outputDir,
-        emitApiTypes: !cli.noTypes,
-        hooks: config.hooks,
-      });
-      console.log(
-        `OK ${project.name} (${project.displayName}): ${r.serviceNames.length} services, ${r.totalEndpoints} endpoints, ${r.filesWritten} files`,
-      );
-      totalFiles += r.filesWritten;
-      totalEndpoints += r.totalEndpoints;
-    } catch (e) {
-      console.error(`FAIL ${project.name}: ${(e as Error).message}`);
-      process.exitCode = 1;
+  for (const [index, result] of results.entries()) {
+    const project = targets[index]!;
+    const status = cli.check && result.changed ? "DRIFT" : result.changed ? "OK" : "UNCHANGED";
+    console.log(
+      `${status} ${project.name} (${project.displayName}): ${result.serviceNames.length} services, ${result.totalEndpoints} endpoints, ${result.filesWritten} files`,
+    );
+    if (result.changedFiles.length > 0) {
+      for (const file of result.changedFiles) console.log(`  - ${file}`);
     }
+    totalFiles += result.filesWritten;
+    totalEndpoints += result.totalEndpoints;
+    if (cli.check && result.changed) process.exitCode = 1;
   }
 
   console.log("");

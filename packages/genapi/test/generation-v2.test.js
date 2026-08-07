@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { generate, validateConfig } from "../dist/index.js";
+import { generate, generateMany, validateConfig } from "../dist/index.js";
 
 function service(name, extra = {}) {
   return {
@@ -250,6 +250,108 @@ test("external references fail before writing generated output", async () => {
         outputDir: "generated",
       }),
       /暂不支持外部 \$ref/,
+    );
+    assert.equal(existsSync(join(root, "generated")), false);
+  });
+});
+
+test("deterministic generation emits a manifest and check mode is read-only", async () => {
+  await withTempProject(async (root) => {
+    const swagger = document({
+      paths: { "/items": { get: { responses: { 200: { description: "OK" } } } } },
+      schemas: { ItemDto: { type: "object", properties: { id: { type: "string" } } } },
+    });
+    await writeSwagger(root, "base", swagger);
+    const options = {
+      xapiForgeConfig: config([service("base")]),
+      projectId: "demo",
+      swaggerDir: "swagger",
+      outputDir: "generated",
+    };
+
+    const first = await generate(options);
+    assert.equal(first.changed, true);
+    assert.equal(first.filesWritten, 4);
+    const indexPath = join(root, "generated/demo/index.ts");
+    const firstIndex = await readFile(indexPath, "utf8");
+    assert.doesNotMatch(firstIndex, /生成时间/);
+
+    const manifest = JSON.parse(await readFile(join(root, "generated/demo/manifest.json"), "utf8"));
+    assert.deepEqual(
+      {
+        formatVersion: manifest.formatVersion,
+        generator: manifest.generator,
+        openapiTypescriptVersion: manifest.openapiTypescriptVersion,
+        typescriptVersion: manifest.typescriptVersion,
+        esbuildVersion: manifest.esbuildVersion,
+      },
+      {
+        formatVersion: 2,
+        generator: "@xapiforge/genapi",
+        openapiTypescriptVersion: "7.13.0",
+        typescriptVersion: "5.9.3",
+        esbuildVersion: "0.28.1",
+      },
+    );
+
+    const second = await generate(options);
+    assert.equal(second.changed, false);
+    assert.deepEqual(second.changedFiles, []);
+    assert.equal(await readFile(indexPath, "utf8"), firstIndex);
+
+    swagger.paths["/changed"] = { post: { responses: { 204: { description: "Changed" } } } };
+    await writeSwagger(root, "base", swagger);
+    const checked = await generate({ ...options, check: true });
+    assert.equal(checked.changed, true);
+    assert.ok(checked.changedFiles.includes("types/base.ts"));
+    assert.ok(checked.changedFiles.includes("manifest.json"));
+    assert.equal(await readFile(indexPath, "utf8"), firstIndex);
+  });
+});
+
+test("generateMany prepares every project before writing any output", async () => {
+  await withTempProject(async (root) => {
+    for (const projectName of ["first", "second"]) {
+      const directory = join(root, "swagger", projectName);
+      await mkdir(directory, { recursive: true });
+      await writeFile(join(directory, "base.json"), JSON.stringify(document()), "utf8");
+    }
+    const cfg = {
+      defaultPath: "/swagger/v1/swagger.json",
+      timeoutMs: 15_000,
+      outputDir: "swagger",
+      mode: "offline",
+      projects: [
+        {
+          name: "first",
+          displayName: "First",
+          baseHost: "http://localhost",
+          services: [service("base")],
+        },
+        {
+          name: "second",
+          displayName: "Second",
+          baseHost: "http://localhost",
+          services: [service("base")],
+          hooks: {
+            async transformSwagger() {
+              throw new Error("second project failed");
+            },
+          },
+        },
+      ],
+    };
+
+    await assert.rejects(
+      generateMany(
+        cfg.projects.map((project) => ({
+          xapiForgeConfig: cfg,
+          projectId: project.name,
+          swaggerDir: "swagger",
+          outputDir: "generated",
+        })),
+      ),
+      /second project failed/,
     );
     assert.equal(existsSync(join(root, "generated")), false);
   });

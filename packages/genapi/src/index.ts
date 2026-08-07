@@ -28,9 +28,10 @@
  *   // → 产出 src/api/gen/demo/index.ts + src/api/gen/demo/types/<svc>.ts + src/api/gen/demo/api-types.ts
  */
 
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { createHash } from "node:crypto";
 import openapiTS, { astToString, type OpenAPI3 } from "openapi-typescript";
 
 // ---------- 语义类型 ----------
@@ -181,6 +182,8 @@ export interface GenerateOptions {
   outputDir: string;
   templateDir?: string;
   emitApiTypes?: boolean;
+  /** 仅比较 staging 与正式目录，不修改正式产物。 */
+  check?: boolean;
   /** 业务侧扩展点，见 docs/guides/genapi-hooks.md */
   hooks?: GenapiHooks;
 }
@@ -191,6 +194,10 @@ export interface GenerateResult {
   filesWritten: number;
   serviceNames: string[];
   totalEndpoints: number;
+  /** 本次输入是否会改变（check）或已经改变（generate）正式产物。 */
+  changed: boolean;
+  /** 相对 project 输出目录的差异文件清单。 */
+  changedFiles: string[];
 }
 
 // ---------- 内部类型 ----------
@@ -216,6 +223,13 @@ interface ServiceModel {
   serviceInfo: ServiceInfo;
   hooks?: GenapiHooks;
   hookContext: GenapiHookContext;
+  normalizedDocumentHash: string;
+}
+
+interface ProjectArtifacts {
+  result: Omit<GenerateResult, "changed" | "changedFiles">;
+  outputDir: string;
+  files: ReadonlyMap<string, string>;
 }
 
 const CONFIG_ID_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
@@ -456,6 +470,10 @@ function resolveHooks(
   return rootHooks;
 }
 
+function sha256(value: string): string {
+  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
 async function loadServiceModels(
   project: ProjectConfig,
   swaggerDir: string,
@@ -511,6 +529,7 @@ async function loadServiceModels(
       serviceInfo: { name: service.name, tagMap, endpointCount },
       hooks,
       hookContext,
+      normalizedDocumentHash: sha256(JSON.stringify(transformed)),
     });
   }
   return models;
@@ -532,7 +551,7 @@ function assertPathInside(root: string, target: string, label: string): void {
  * 3. 写 src/index.ts（按 service 拆 openapi-fetch client + re-export）
  * 4. 写 src/api-types.ts（按 components.schemas 导 alias）
  */
-export async function generate(opts: GenerateOptions): Promise<GenerateResult> {
+async function buildProjectArtifacts(opts: GenerateOptions): Promise<ProjectArtifacts> {
   validateConfig(opts.xapiForgeConfig);
   const project = opts.xapiForgeConfig.projects.find((p) => p.name === opts.projectId);
   if (!project) {
@@ -551,24 +570,19 @@ export async function generate(opts: GenerateOptions): Promise<GenerateResult> {
   const outputRoot = resolve(process.cwd(), opts.outputDir);
   const outDir = resolve(outputRoot, project.name);
   assertPathInside(outputRoot, outDir, `project ${project.name} 输出路径`);
-  const typesDir = join(outDir, "types");
   const rootHooks = opts.hooks !== undefined ? opts.hooks : opts.xapiForgeConfig.hooks;
 
-  // 所有 service 必须先完成读取、hook 规范化和分析；失败时不创建正式输出目录。
+  // 所有 service 和文件内容先在内存中准备完成；失败时不创建正式输出目录。
   const serviceModels = await loadServiceModels(project, swaggerDir, outDir, rootHooks);
-  await mkdir(typesDir, { recursive: true });
+  const files = new Map<string, string>();
 
   // 1. openapi-typescript → types/<svc>.ts。所有步骤复用同一份 hook 后文档。
   for (const model of serviceModels) {
-    const typeFile = model.hookContext.typesPath;
-    await runOpenapiTypescript(model.document, typeFile);
+    let typesContent = await runOpenapiTypescript(model.document);
     if (model.hooks?.transformTypes) {
-      const original = await readFile(typeFile, "utf8");
-      const transformed = await model.hooks.transformTypes(original, model.hookContext);
-      if (transformed !== original) {
-        await writeFile(typeFile, transformed, "utf8");
-      }
+      typesContent = await model.hooks.transformTypes(typesContent, model.hookContext);
     }
+    files.set(`types/${model.config.name}.ts`, normalizeLineEndings(typesContent));
   }
 
   const serviceNames = serviceModels.map((model) => model.config.name);
@@ -582,11 +596,10 @@ export async function generate(opts: GenerateOptions): Promise<GenerateResult> {
     serviceInfos,
     serviceNames,
   );
-  await writeFile(join(outDir, "index.ts"), indexContent, "utf8");
+  files.set("index.ts", normalizeLineEndings(indexContent));
 
   // 4. 写 api-types.ts —— components.schemas 导 alias
   const emitTypes = opts.emitApiTypes !== false; // 默认 true
-  const apiTypesPath = join(outDir, "api-types.ts");
   if (emitTypes) {
     const apiTypesContent = renderApiTypes(
       project.name,
@@ -594,30 +607,174 @@ export async function generate(opts: GenerateOptions): Promise<GenerateResult> {
       serviceModels,
       opts.xapiForgeConfig.namespacePrefixAliases,
     );
-    await writeFile(apiTypesPath, apiTypesContent, "utf8");
-  } else if (existsSync(apiTypesPath)) {
-    await import("node:fs/promises").then((m) => m.unlink(apiTypesPath));
+    files.set("api-types.ts", normalizeLineEndings(apiTypesContent));
   }
 
+  files.set("manifest.json", await renderManifest(project.name, serviceModels));
+
   const total = serviceInfos.reduce((n, s) => n + s.endpointCount, 0);
-  const filesWritten = serviceNames.length + 1 + (emitTypes ? 1 : 0);
+  const filesWritten = files.size;
   return {
-    projectId: project.name,
-    outputDir: dirname(outDir),
-    filesWritten,
-    serviceNames,
-    totalEndpoints: total,
+    result: {
+      projectId: project.name,
+      outputDir: outDir,
+      filesWritten,
+      serviceNames,
+      totalEndpoints: total,
+    },
+    outputDir: outDir,
+    files,
   };
+}
+
+/** 一次准备一个或多个 project；全部准备成功后才开始写文件。 */
+export async function generateMany(options: GenerateOptions[]): Promise<GenerateResult[]> {
+  if (options.length === 0) return [];
+  const checkMode = options[0]!.check === true;
+  if (options.some((option) => (option.check === true) !== checkMode)) {
+    throw new Error("[genapi] generateMany 的 check 模式必须一致");
+  }
+
+  const projects: ProjectArtifacts[] = [];
+  for (const option of options) {
+    const next = await buildProjectArtifacts(option);
+    if (projects.some((project) => project.outputDir === next.outputDir)) {
+      throw new Error(`[genapi] 同一输出目录被重复生成：${next.outputDir}`);
+    }
+    projects.push(next);
+  }
+
+  const results: GenerateResult[] = [];
+  for (const project of projects) {
+    const changedFiles = await compareArtifacts(project.outputDir, project.files);
+    if (!checkMode && changedFiles.length > 0) {
+      await writeArtifacts(project.outputDir, project.files);
+    }
+    results.push({
+      ...project.result,
+      changed: changedFiles.length > 0,
+      changedFiles,
+    });
+  }
+  return results;
+}
+
+export async function generate(opts: GenerateOptions): Promise<GenerateResult> {
+  const [result] = await generateMany([opts]);
+  return result!;
+}
+
+function normalizeLineEndings(content: string): string {
+  return content.replace(/\r\n?/g, "\n");
+}
+
+function lexicalCompare(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+async function loadGeneratorMetadata(): Promise<{
+  generatorVersion: string;
+  openapiTypescriptVersion: string;
+  typescriptVersion: string;
+  esbuildVersion: string;
+}> {
+  const raw = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as {
+    version?: unknown;
+    dependencies?: Record<string, unknown>;
+  };
+  const dependency = (name: string): string => {
+    const value = raw.dependencies?.[name];
+    if (typeof value !== "string") throw new Error(`[genapi] package.json 缺少依赖版本：${name}`);
+    return value;
+  };
+  if (typeof raw.version !== "string") throw new Error("[genapi] package.json 缺少 version");
+  return {
+    generatorVersion: raw.version,
+    openapiTypescriptVersion: dependency("openapi-typescript"),
+    typescriptVersion: dependency("typescript"),
+    esbuildVersion: dependency("esbuild"),
+  };
+}
+
+async function renderManifest(projectId: string, serviceModels: ServiceModel[]): Promise<string> {
+  const metadata = await loadGeneratorMetadata();
+  const services = Object.fromEntries(
+    serviceModels.map((model) => [
+      model.config.name,
+      { normalizedDocumentHash: model.normalizedDocumentHash },
+    ]),
+  );
+  return `${JSON.stringify(
+    {
+      formatVersion: 2,
+      generator: "@xapiforge/genapi",
+      ...metadata,
+      project: projectId,
+      services,
+    },
+    null,
+    2,
+  )}\n`;
+}
+
+async function listRelativeFiles(root: string, prefix = ""): Promise<string[]> {
+  if (!existsSync(root)) return [];
+  const entries = await readdir(join(root, prefix), { withFileTypes: true });
+  const files: string[] = [];
+  for (const entry of entries) {
+    const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) files.push(...(await listRelativeFiles(root, relativePath)));
+    else if (entry.isFile()) files.push(relativePath);
+  }
+  return files.sort();
+}
+
+async function compareArtifacts(
+  outputDir: string,
+  expectedFiles: ReadonlyMap<string, string>,
+): Promise<string[]> {
+  const existingFiles = await listRelativeFiles(outputDir);
+  const candidates = new Set([...existingFiles, ...expectedFiles.keys()]);
+  const changed: string[] = [];
+  for (const relativePath of [...candidates].sort()) {
+    const expected = expectedFiles.get(relativePath);
+    if (expected === undefined || !existsSync(join(outputDir, relativePath))) {
+      changed.push(relativePath);
+      continue;
+    }
+    const actual = normalizeLineEndings(await readFile(join(outputDir, relativePath), "utf8"));
+    if (actual !== expected) changed.push(relativePath);
+  }
+  return changed;
+}
+
+async function writeArtifacts(
+  outputDir: string,
+  files: ReadonlyMap<string, string>,
+): Promise<void> {
+  const staleFiles = (await listRelativeFiles(outputDir)).filter((file) => !files.has(file));
+  if (staleFiles.length > 0) {
+    throw new Error(
+      `[genapi] 输出目录包含本次 manifest 之外的旧文件，拒绝静默删除：${staleFiles.join(", ")}`,
+    );
+  }
+  for (const [relativePath, content] of [...files.entries()].sort(([a], [b]) =>
+    lexicalCompare(a, b),
+  )) {
+    const target = join(outputDir, relativePath);
+    await mkdir(dirname(target), { recursive: true });
+    await writeFile(target, content, "utf8");
+  }
 }
 
 /**
  * 跑 openapi-typescript 生成 types.ts。
  */
-async function runOpenapiTypescript(document: OpenAPI3, outputFile: string): Promise<void> {
+async function runOpenapiTypescript(document: OpenAPI3): Promise<string> {
   // 直接调用依赖的程序 API，不依赖消费者项目是否把传递依赖的 bin 提升到
   // node_modules/.bin。这样 npm、pnpm（含 isolated linker）和 yarn 项目行为一致。
   const ast = await openapiTS(document);
-  await writeFile(outputFile, astToString(ast), "utf8");
+  return astToString(ast);
 }
 
 /**
@@ -667,7 +824,6 @@ function renderIndex(
   serviceNames: string[],
 ): string {
   const totalEndpoints = services.reduce((n, s) => n + s.endpointCount, 0);
-  const now = new Date().toISOString();
   const firstServiceKey = safeKey(serviceNames[0] ?? "service");
 
   const parts: string[] = [];
@@ -679,7 +835,6 @@ function renderIndex(
     " * 引擎：openapi-typescript（路径/schema 类型）+ @xapiforge/core createNet（data-or-throw/鉴权/重试）",
   );
   parts.push(" *");
-  parts.push(` * 生成时间：${now}`);
   parts.push(` * 项目：${projectDisplay} (${projectId})`);
   parts.push(` * 服务数：${serviceNames.length}`);
   parts.push(` * 总 endpoint 数：${totalEndpoints}`);
@@ -1024,7 +1179,7 @@ function renderApiTypes(
     lines.push(`/** namespace ${ns}（${entries.length} 个 schema）*/`);
     lines.push(`export namespace ${ns} {`);
     // 按 alias 排序，保证生成稳定
-    entries.sort((a, b) => a.alias.localeCompare(b.alias));
+    entries.sort((a, b) => lexicalCompare(a.alias, b.alias));
     for (const e of entries) {
       lines.push(`  /** ${e.full}（原 service: ${e.svc}）*/`);
       lines.push(`  export type ${e.alias} = ${cap(e.svc)}Components["schemas"]["${e.full}"];`);
@@ -1035,7 +1190,7 @@ function renderApiTypes(
 
   // ---- 全局 alias 输出 ----
   // 按 alias 排序，保证生成稳定
-  flatEntries.sort((a, b) => a.alias.localeCompare(b.alias));
+  flatEntries.sort((a, b) => lexicalCompare(a.alias, b.alias));
   for (const e of flatEntries) {
     lines.push(`/** ${e.full}（原 service: ${e.svc}）*/`);
     lines.push(`export type ${e.alias} = ${cap(e.svc)}Components["schemas"]["${e.full}"];`);

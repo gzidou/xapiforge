@@ -12,7 +12,9 @@ const fetchCliPath = join(packageDir, "dist", "fetch-cli.js");
 
 test("published package carries its compatible TypeScript runtime", async () => {
   const packageJson = JSON.parse(await readFile(join(packageDir, "package.json"), "utf8"));
-  assert.equal(packageJson.dependencies.typescript, "^5.9.3");
+  assert.equal(packageJson.dependencies.esbuild, "0.28.1");
+  assert.equal(packageJson.dependencies["openapi-typescript"], "7.13.0");
+  assert.equal(packageJson.dependencies.typescript, "5.9.3");
 });
 
 test("CLI generates types without consumer-level dependency binaries", async () => {
@@ -98,6 +100,32 @@ test("CLI generates types without consumer-level dependency binaries", async () 
     );
     assert.match(generated, /"\/api\/ping"/);
     assert.match(generated, /ok: boolean/);
+
+    const stableCheck = spawnSync(
+      process.execPath,
+      [cliPath, "demo", "--", "--check"],
+      spawnOptions,
+    );
+    assert.equal(stableCheck.status, 0, `${stableCheck.stdout}\n${stableCheck.stderr}`);
+    assert.match(stableCheck.stdout, /UNCHANGED demo/);
+
+    const swaggerPath = join(consumerDir, "swagger", "demo", "base.json");
+    const changedSwagger = JSON.parse(await readFile(swaggerPath, "utf8"));
+    changedSwagger.paths["/api/changed"] = {
+      get: { responses: { 200: { description: "Changed" } } },
+    };
+    await writeFile(swaggerPath, JSON.stringify(changedSwagger), "utf8");
+    const driftCheck = spawnSync(process.execPath, [cliPath, "demo", "--check"], spawnOptions);
+    assert.equal(driftCheck.status, 1, `${driftCheck.stdout}\n${driftCheck.stderr}`);
+    assert.match(driftCheck.stdout, /DRIFT demo/);
+    assert.equal(
+      await readFile(join(consumerDir, "src", "api", "gen", "demo", "types", "base.ts"), "utf8"),
+      generated,
+    );
+
+    const invalidOption = spawnSync(process.execPath, [cliPath, "demo", "--chek"], spawnOptions);
+    assert.equal(invalidOption.status, 1, `${invalidOption.stdout}\n${invalidOption.stderr}`);
+    assert.match(invalidOption.stderr, /未知参数：--chek/);
   } finally {
     await rm(consumerDir, { recursive: true, force: true });
   }
