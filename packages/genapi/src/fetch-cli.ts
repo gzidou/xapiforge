@@ -1,44 +1,32 @@
 #!/usr/bin/env node
 /**
- * @xapiforge/genapi — `xapiforge-fetch` CLI
+ * @xapiforge/genapi — `xapiforge-fetch` CLI。
  *
- * 原独立 swagger-fetch 能力已合入 genapi。
- *
- * 用法：
- *   业务项目装上 `@xapiforge/genapi` 后，配自己的 xapiforge.config.ts：
- *
- *   import { defineConfig } from "@xapiforge/genapi";
- *   export default defineConfig({ ... });
- *
- *   package.json:
- *     "scripts": { "download-swagger": "xapiforge-fetch" }
- *
- *   pnpm download-swagger
- *
- * CLI 默认读 cwd 下的 xapiforge.config.ts，遍历项目逐个下载 swagger.json。
+ * - source.file：直接校验并复用配置指定文件，不复制、不改名。
+ * - source.url：online 下载到 outputDir/{project}/{service}.json 标准缓存；
+ *   offline 只校验该缓存。
  */
 
-import {
-  fetchSwaggerJson,
-  formatBytes,
-  type ServiceConfig,
-  type ProjectConfig,
-  type XApiForgeConfig,
-} from "./swagger-fetch.js";
-import { configApiPlugin } from "./config-api-plugin.js";
-import { writeFile, mkdir, stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
+import { configApiPlugin } from "./config-api-plugin.js";
+import {
+  defineConfig,
+  validateConfig,
+  type ProjectConfig,
+  type ServiceConfig,
+  type XApiForgeConfig,
+} from "./index.js";
+import { isSwaggerFileSource, resolveSwaggerInputPath } from "./swagger-source.js";
+import { fetchSwaggerJson, formatBytes } from "./swagger-fetch.js";
 
-/**
- * 加载业务项目的 xapiforge.config。
- * 优先 .ts（用 esbuild 动态编译），fallback .js（Node 直接 import）。
- */
+/** 加载 cwd 下的 TypeScript 或 JavaScript 配置。 */
 async function loadConfig(cwd: string): Promise<XApiForgeConfig> {
-  const tsPath = `${cwd}/xapiforge.config.ts`;
-  const jsPath = `${cwd}/xapiforge.config.js`;
+  const tsPath = join(cwd, "xapiforge.config.ts");
+  const jsPath = join(cwd, "xapiforge.config.js");
   if (existsSync(tsPath)) {
     const result = await build({
       entryPoints: [tsPath],
@@ -52,48 +40,36 @@ async function loadConfig(cwd: string): Promise<XApiForgeConfig> {
     });
     const code = result.outputFiles[0]?.text;
     if (!code) throw new Error(`esbuild build failed for ${tsPath}`);
-    const cacheDir = join(cwd, "node_modules", ".cache", "xapiforge");
-    mkdirSync(cacheDir, { recursive: true });
-    const compiledPath = join(cacheDir, `config-${process.pid}-${Date.now()}.mjs`);
-    writeFileSync(compiledPath, code, "utf8");
+    const cacheDirectory = join(cwd, "node_modules", ".cache", "xapiforge");
+    await mkdir(cacheDirectory, { recursive: true });
+    const compiledPath = join(cacheDirectory, `config-${process.pid}-${Date.now()}.mjs`);
+    await writeFile(compiledPath, code, "utf8");
     try {
-      const mod = (await import(pathToFileURL(compiledPath).href)) as {
+      const module = (await import(pathToFileURL(compiledPath).href)) as {
         default?: XApiForgeConfig;
         xapiForgeConfig?: XApiForgeConfig;
       };
-      const config = mod.default ?? mod.xapiForgeConfig;
+      const config = module.default ?? module.xapiForgeConfig;
       if (!config) {
-        throw new Error(`xapiforge.config.ts must export default config or 'xapiForgeConfig'`);
+        throw new Error("xapiforge.config.ts 必须 default export 或导出 xapiForgeConfig");
       }
-      return config;
+      return defineConfig(config);
     } finally {
-      rmSync(compiledPath, { force: true });
+      await rm(compiledPath, { force: true });
     }
   }
   if (existsSync(jsPath)) {
-    const mod = (await import(pathToFileURL(jsPath).href)) as {
+    const module = (await import(pathToFileURL(jsPath).href)) as {
       default?: XApiForgeConfig;
       xapiForgeConfig?: XApiForgeConfig;
     };
-    const config = mod.default ?? mod.xapiForgeConfig;
-    if (!config)
-      throw new Error(`xapiforge.config.js must export default config or 'xapiForgeConfig'`);
-    return config;
+    const config = module.default ?? module.xapiForgeConfig;
+    if (!config) {
+      throw new Error("xapiforge.config.js 必须 default export 或导出 xapiForgeConfig");
+    }
+    return defineConfig(config);
   }
   throw new Error(`xapiforge.config not found: ${tsPath} or ${jsPath}`);
-}
-
-function printHelp(): void {
-  console.log(
-    [
-      "Usage: xapiforge-fetch [options]",
-      "",
-      "Options:",
-      "  --only <list>     只下载指定项目，逗号分隔（如 demo,admin）",
-      "  --dry-run         只打印 URL，不写文件",
-      "  -h, --help        显示帮助",
-    ].join("\n"),
-  );
 }
 
 interface ParsedCli {
@@ -102,215 +78,272 @@ interface ParsedCli {
   help: boolean;
 }
 
-function parseCli(argv: string[]): ParsedCli {
-  const out: ParsedCli = { only: [], dryRun: false, help: false };
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i]!;
-    if (a === "-h" || a === "--help") out.help = true;
-    else if (a === "--dry-run") out.dryRun = true;
-    else if (a === "--only") {
-      const v = argv[++i] ?? "";
-      out.only = v
+function parseCli(argv: readonly string[]): ParsedCli {
+  const result: ParsedCli = { only: [], dryRun: false, help: false };
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index]!;
+    if (argument === "-h" || argument === "--help") {
+      result.help = true;
+    } else if (argument === "--dry-run") {
+      result.dryRun = true;
+    } else if (argument === "--only") {
+      result.only = (argv[(index += 1)] ?? "")
         .split(",")
-        .map((s) => s.trim())
+        .map((value) => value.trim())
         .filter(Boolean);
+    } else {
+      throw new Error(`未知参数：${argument}`);
     }
   }
-  return out;
+  return result;
 }
 
-function projLabel(p: ProjectConfig): string {
-  return `${p.displayName} (${p.name})`;
-}
-function svcLabel(s: ServiceConfig): string {
-  return `${s.displayName} (${s.name})`;
+function printHelp(): void {
+  console.log(
+    [
+      "Usage: xapiforge-fetch [options]",
+      "",
+      "Options:",
+      "  --only <list>     只处理指定项目，逗号分隔",
+      "  --dry-run         校验本地来源；远程来源只打印 URL，不下载",
+      "  -h, --help        显示帮助",
+    ].join("\n"),
+  );
 }
 
-interface DownloadResult {
+function projectLabel(project: ProjectConfig): string {
+  return `${project.displayName} (${project.name})`;
+}
+
+function serviceLabel(service: ServiceConfig): string {
+  return `${service.displayName} (${service.name})`;
+}
+
+interface SourceResult {
   project: string;
   service: string;
-  url: string | null;
-  outputPath: string;
+  source: string;
+  outputPath: string | null;
   ok: boolean;
   bytes?: number;
   error?: string;
   status?: number;
 }
 
+async function validateJsonFile(path: string): Promise<number> {
+  const text = await readFile(path, "utf8");
+  try {
+    JSON.parse(text);
+  } catch (error) {
+    throw new Error(`JSON 无效：${error instanceof Error ? error.message : String(error)}`);
+  }
+  return (await stat(path)).size;
+}
+
+/** 同目录临时文件 + rename，避免下载中断留下半个 JSON 缓存。 */
+async function writeCacheAtomically(path: string, content: string): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  const temporary = `${path}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    await writeFile(temporary, content, "utf8");
+    await rename(temporary, path);
+  } finally {
+    await rm(temporary, { force: true });
+  }
+}
+
+async function processFileSource(options: {
+  cwd: string;
+  swaggerRoot: string;
+  project: ProjectConfig;
+  service: ServiceConfig;
+}): Promise<SourceResult> {
+  const { cwd, swaggerRoot, project, service } = options;
+  const inputPath = resolveSwaggerInputPath({
+    configDirectory: cwd,
+    swaggerRoot,
+    projectId: project.name,
+    service,
+  });
+  try {
+    const bytes = await validateJsonFile(inputPath);
+    console.log(
+      `  [✓] ${project.name}/${service.name} — ${projectLabel(project)} / ${serviceLabel(service)} → file:${inputPath} (${formatBytes(bytes)})`,
+    );
+    return {
+      project: project.name,
+      service: service.name,
+      source: `file:${inputPath}`,
+      outputPath: null,
+      ok: true,
+      bytes,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.log(`  [FAIL] ${project.name}/${service.name} — file:${inputPath} — ${message}`);
+    return {
+      project: project.name,
+      service: service.name,
+      source: `file:${inputPath}`,
+      outputPath: null,
+      ok: false,
+      error: message,
+    };
+  }
+}
+
+async function processUrlSource(options: {
+  swaggerRoot: string;
+  project: ProjectConfig;
+  service: ServiceConfig;
+  timeoutMs: number;
+  offline: boolean;
+  dryRun: boolean;
+}): Promise<SourceResult> {
+  const { swaggerRoot, project, service, timeoutMs, offline, dryRun } = options;
+  if (isSwaggerFileSource(service.source)) {
+    throw new Error("[genapi] internal: processUrlSource received source.file");
+  }
+  const tag = `${project.name}/${service.name}`;
+  const url = service.source.url;
+  const outputPath = resolve(swaggerRoot, project.name, `${service.name}.json`);
+
+  // dry-run 是显式 CLI 行为，优先于 online/offline：远程来源永远不访问网络或缓存。
+  if (dryRun) {
+    console.log(`  [dry] ${tag} → ${url} => ${outputPath}`);
+    return {
+      project: project.name,
+      service: service.name,
+      source: url,
+      outputPath,
+      ok: true,
+    };
+  }
+
+  if (offline) {
+    try {
+      const bytes = await validateJsonFile(outputPath);
+      console.log(`  [✓] ${tag} — cache:${outputPath} (${formatBytes(bytes)})`);
+      return {
+        project: project.name,
+        service: service.name,
+        source: url,
+        outputPath,
+        ok: true,
+        bytes,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.log(`  [FAIL] ${tag} — cache:${outputPath} — ${message}`);
+      return {
+        project: project.name,
+        service: service.name,
+        source: url,
+        outputPath,
+        ok: false,
+        error: message,
+      };
+    }
+  }
+
+  process.stdout.write(`  [..] ${tag} → ${url} ... `);
+  const response = await fetchSwaggerJson({ source: service.source, timeoutMs });
+  if (!response.ok || response.text === undefined) {
+    const error = response.error ?? "unknown error";
+    console.log(`FAIL — ${error}`);
+    return {
+      project: project.name,
+      service: service.name,
+      source: url,
+      outputPath,
+      ok: false,
+      error,
+      status: response.status,
+    };
+  }
+
+  try {
+    await writeCacheAtomically(outputPath, response.text);
+    console.log(`OK (${formatBytes(response.bytes ?? 0)})`);
+    return {
+      project: project.name,
+      service: service.name,
+      source: url,
+      outputPath,
+      ok: true,
+      bytes: response.bytes,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.log(`FAIL — write cache: ${message}`);
+    return {
+      project: project.name,
+      service: service.name,
+      source: url,
+      outputPath,
+      ok: false,
+      error: `write cache: ${message}`,
+    };
+  }
+}
+
 async function main(): Promise<void> {
   const cli = parseCli(process.argv.slice(2));
   if (cli.help) {
     printHelp();
-    process.exit(0);
-  }
-  const config = await loadConfig(process.cwd());
-
-  if (config.projects.length === 0) {
-    console.error(`xapiForgeConfig.projects 为空，请检查 xapiforge.config.ts`);
-    process.exit(2);
-  }
-
-  const filterSet = cli.only.length > 0 ? new Set(cli.only) : null;
-  const projects: ProjectConfig[] = filterSet
-    ? config.projects.filter((p: ProjectConfig) => filterSet.has(p.name))
-    : config.projects;
-  if (projects.length === 0) {
-    console.error(`未匹配到任何项目（--only=${cli.only.join(",")}）`);
-    process.exit(2);
-  }
-
-  const total = projects.reduce((n: number, p: ProjectConfig) => n + p.services.length, 0);
-  console.log(
-    `\u25b6 配置: xapiforge.config.ts\n\u25b6 目标项目: ${projects.map(projLabel).join(", ")}\n\u25b6 共 ${total} 个 swagger.json${cli.dryRun ? "（dry-run）" : ""}`,
-  );
-
-  const results: DownloadResult[] = [];
-  const outBase = resolve(process.cwd(), config.outputDir);
-  const isOffline = config.mode === "offline";
-
-  if (isOffline) {
-    console.log(
-      `\u26a0  mode=offline：跳过下载，假设 ${config.outputDir}/{project}/{service}.json 已存在`,
-    );
-  }
-
-  for (const proj of projects) {
-    for (const svc of proj.services) {
-      const tag = `${proj.name}/${svc.name}`;
-      const outputPath = join(outBase, proj.name, `${svc.name}.json`);
-
-      // offline mode：检查文件是否存在，存在就跳过，不存在就报错
-      if (isOffline) {
-        if (existsSync(outputPath)) {
-          const st = await stat(outputPath);
-          console.log(
-            `  [\u2713] ${tag} \u2014 ${projLabel(proj)} / ${svcLabel(svc)} \u2192 已存在 (${formatBytes(st.size)})`,
-          );
-          results.push({
-            project: proj.name,
-            service: svc.name,
-            url: null,
-            outputPath,
-            ok: true,
-            bytes: st.size,
-          });
-          continue;
-        }
-        const errMsg = `swagger/${proj.name}/${svc.name}.json 不存在（offline 模式）`;
-        console.log(`  [FAIL] ${tag} \u2014 ${errMsg}`);
-        results.push({
-          project: proj.name,
-          service: svc.name,
-          url: null,
-          outputPath,
-          ok: false,
-          error: errMsg,
-        });
-        continue;
-      }
-
-      const res = await fetchSwaggerJson({
-        defaultPath: config.defaultPath,
-        timeoutMs: config.timeoutMs,
-        project: {
-          name: proj.name,
-          displayName: proj.displayName,
-          baseHost: proj.baseHost,
-          services: proj.services,
-        },
-        serviceName: svc.name,
-      });
-
-      if (res.url === null && res.ok) {
-        console.log(
-          `  [\u23ed ] ${tag} \u2014 ${projLabel(proj)} / ${svcLabel(svc)} \u2192 \u26a0 占位（port: 0，暂未联调）`,
-        );
-        results.push({ project: proj.name, service: svc.name, url: null, outputPath, ok: true });
-        continue;
-      }
-
-      if (cli.dryRun) {
-        console.log(
-          `  [dry] ${tag} \u2014 ${projLabel(proj)} / ${svcLabel(svc)} \u2192 ${res.url}`,
-        );
-        results.push({ project: proj.name, service: svc.name, url: res.url, outputPath, ok: true });
-        continue;
-      }
-
-      process.stdout.write(
-        `  [..] ${tag} \u2014 ${projLabel(proj)} / ${svcLabel(svc)} \u2192 ${res.url} ... `,
-      );
-      if (!res.ok || !res.text) {
-        const errMsg = res.error ?? "unknown error";
-        console.log(`FAIL \u2014 ${errMsg}`);
-        results.push({
-          project: proj.name,
-          service: svc.name,
-          url: res.url,
-          outputPath,
-          ok: false,
-          error: errMsg,
-          status: res.status,
-        });
-        continue;
-      }
-
-      try {
-        await mkdir(dirname(outputPath), { recursive: true });
-        await writeFile(outputPath, res.text, "utf8");
-        console.log(`OK (${formatBytes(res.bytes ?? 0)})`);
-        results.push({
-          project: proj.name,
-          service: svc.name,
-          url: res.url,
-          outputPath,
-          ok: true,
-          bytes: res.bytes,
-        });
-      } catch (e) {
-        const err = e as Error;
-        console.log(`FAIL \u2014 writeFile: ${err.message}`);
-        results.push({
-          project: proj.name,
-          service: svc.name,
-          url: res.url,
-          outputPath,
-          ok: false,
-          error: `writeFile: ${err.message}`,
-        });
-      }
-    }
-  }
-
-  const ok = results.filter((r) => r.ok).length;
-  const fail = results.length - ok;
-  const totalBytes = results.reduce((n, r) => n + (r.bytes ?? 0), 0);
-
-  console.log("");
-  console.log("--- 汇总 ---");
-  console.log(`成功: ${ok}  失败: ${fail}  总大小: ${formatBytes(totalBytes)}`);
-
-  if (fail > 0) {
-    console.log("\n失败明细:");
-    for (const r of results) {
-      if (r.ok) continue;
-      const status = r.status ? ` [HTTP ${r.status}]` : "";
-      console.log(`  - ${r.project}/${r.service}${status}: ${r.error}`);
-    }
-    process.exitCode = 1;
     return;
   }
 
-  if (!cli.dryRun) {
-    console.log("\n\u2705 全部下载完成");
+  const cwd = process.cwd();
+  const config = await loadConfig(cwd);
+  validateConfig(config);
+  const selected = cli.only.length === 0 ? null : new Set(cli.only);
+  const projects = selected
+    ? config.projects.filter((project) => selected.has(project.name))
+    : config.projects;
+  if (projects.length === 0) {
+    throw new Error(`未匹配到任何项目（--only=${cli.only.join(",")}）`);
+  }
+
+  const swaggerRoot = resolve(cwd, config.outputDir);
+  const offline = config.mode === "offline";
+  const total = projects.reduce((sum, project) => sum + project.services.length, 0);
+  console.log(
+    `▶ 目标项目: ${projects.map(projectLabel).join(", ")}\n▶ 共 ${total} 个 OpenAPI source${cli.dryRun ? "（dry-run）" : offline ? "（offline）" : ""}`,
+  );
+
+  const results: SourceResult[] = [];
+  for (const project of projects) {
+    for (const service of project.services) {
+      results.push(
+        isSwaggerFileSource(service.source)
+          ? await processFileSource({ cwd, swaggerRoot, project, service })
+          : await processUrlSource({
+              swaggerRoot,
+              project,
+              service,
+              timeoutMs: config.timeoutMs,
+              offline,
+              dryRun: cli.dryRun,
+            }),
+      );
+    }
+  }
+
+  const failures = results.filter((result) => !result.ok);
+  const totalBytes = results.reduce((sum, result) => sum + (result.bytes ?? 0), 0);
+  console.log(
+    `\n${failures.length === 0 ? "✓" : "✗"} 完成：${results.length - failures.length}/${results.length} 成功，${formatBytes(totalBytes)}`,
+  );
+  if (failures.length > 0) {
+    for (const failure of failures) {
+      console.error(`  - ${failure.project}/${failure.service}: ${failure.error}`);
+    }
+    process.exitCode = 1;
   }
 }
 
-main()
-  .catch((e) => {
-    console.error(`\u274c 未捕获异常: ${(e as Error).message}`);
-    process.exit(1);
-  })
-  .finally(() => {
-    process.exit(process.exitCode ?? 0);
-  });
+main().catch((error: unknown) => {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+});

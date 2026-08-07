@@ -37,7 +37,7 @@ export interface GenapiHooks {
   → 与 index/api-types/manifest 一起进入事务生成
 ```
 
-同一份 `normalizedDocument` 同时用于 service 类型、endpoint 元数据、schema alias 和 manifest hash。hook 重命名、增加或删除 path/schema 后，所有生成视图保持一致。
+同一份深度冻结的 `normalizedDocument` 同时用于 service 类型、endpoint 元数据、schema alias 和 manifest hash。hook 重命名、增加或删除 path/schema 后，所有生成视图保持一致。因为 `openapi-typescript` 的底层 bundler 会修改输入，生成器只向它传递一次性 `structuredClone`；不会重新读取文档或再次执行 hook。
 
 `transformSwagger` 返回 `null`/`undefined`、非 OpenAPI 对象或外部 `$ref` 时立即失败。原 Swagger 文件不会被修改。
 
@@ -54,12 +54,21 @@ defineConfig({
     {
       name: "portal",
       displayName: "Portal",
-      baseHost: "http://localhost:7001",
       hooks: projectHooks,
       services: [
-        { name: "base", displayName: "Base", port: 7001 },
-        { name: "legacy", displayName: "Legacy", port: 7002, hooks: legacyHooks },
-        { name: "standard", displayName: "Standard", port: 7003, hooks: {} }
+        { name: "base", displayName: "Base", source: { file: "swagger/base.json" } },
+        {
+          name: "legacy",
+          displayName: "Legacy",
+          source: { file: "swagger/legacy.json" },
+          hooks: legacyHooks
+        },
+        {
+          name: "standard",
+          displayName: "Standard",
+          source: { url: "https://api.example.test/openapi.json" },
+          hooks: {}
+        }
       ]
     }
   ]

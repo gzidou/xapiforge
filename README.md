@@ -37,7 +37,6 @@ pnpm add -D @xapiforge/genapi
 import { defineConfig } from "@xapiforge/genapi";
 
 export default defineConfig({
-  defaultPath: "/swagger/v1/swagger.json",
   timeoutMs: 15_000,
   outputDir: "swagger",
   genOutputDir: "src/api/gen",
@@ -46,8 +45,13 @@ export default defineConfig({
     {
       name: "myapp",
       displayName: "My Application",
-      baseHost: "http://localhost:7001",
-      services: [{ name: "base", displayName: "Base API", port: 7001 }]
+      services: [
+        {
+          name: "base",
+          displayName: "Base API",
+          source: { url: "http://localhost:7001/swagger/v1/swagger.json" }
+        }
+      ]
     }
   ]
 });

@@ -9,7 +9,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { build } from "esbuild";
 
-import { generate, generateMany, validateConfig } from "../dist/index.js";
+import {
+  downloadJson,
+  fetchSwaggerJson,
+  generate,
+  generateMany,
+  validateConfig,
+} from "../dist/index.js";
 
 const packageDir = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const tscPath = join(packageDir, "node_modules", "typescript", "bin", "tsc");
@@ -18,14 +24,13 @@ function service(name, extra = {}) {
   return {
     name,
     displayName: `${name} service`,
-    port: 8787,
+    source: { file: `swagger/demo/${name}.json` },
     ...extra,
   };
 }
 
 function config(services, projectExtra = {}, rootExtra = {}) {
   return {
-    defaultPath: "/swagger/v1/swagger.json",
     timeoutMs: 15_000,
     outputDir: "swagger",
     mode: "offline",
@@ -33,7 +38,6 @@ function config(services, projectExtra = {}, rootExtra = {}) {
       {
         name: "demo",
         displayName: "Demo",
-        baseHost: "http://localhost",
         services,
         ...projectExtra,
       },
@@ -71,6 +75,15 @@ async function withTempProject(run) {
 
 test("validateConfig rejects unsafe IDs, generated-name collisions, and invalid namespaces", () => {
   assert.throws(
+    () =>
+      validateConfig({
+        timeoutMs: 15_000,
+        outputDir: "swagger",
+        projects: [],
+      }),
+    /projects 必须是非空数组/,
+  );
+  assert.throws(
     () => validateConfig(config([service("Base")])),
     /projects\[0\]\.services\[0\]\.name 必须匹配/,
   );
@@ -81,16 +94,211 @@ test("validateConfig rejects unsafe IDs, generated-name collisions, and invalid 
   assert.throws(
     () =>
       validateConfig(
-        config(
-          [service("base")],
-          {},
-          {
-            namespacePrefixAliases: [{ match: "Fixture.", namespace: "default" }],
+        config([service("base")], {
+          typeExports: {
+            namespaces: [{ match: "Fixture.", namespace: "default" }],
           },
-        ),
+        }),
       ),
     /必须是非保留的 TypeScript 标识符/,
   );
+  assert.throws(
+    () => validateConfig({ ...config([service("base")]), defaultPath: "/swagger.json" }),
+    /根配置 包含 v2 已移除字段：defaultPath/,
+  );
+  assert.throws(
+    () => validateConfig({ ...config([service("base")]), timeotMs: 1 }),
+    /根配置 包含未知字段：timeotMs/,
+  );
+  assert.throws(
+    () =>
+      validateConfig(
+        config([
+          service("base", {
+            source: { file: "swagger.json", url: "https://example.test/openapi.json" },
+          }),
+        ]),
+      ),
+    /source 必须且只能配置 file 或 url 其中一个/,
+  );
+  assert.throws(
+    () =>
+      validateConfig(
+        config([
+          service("base", {
+            source: { url: "https://user:secret@example.test/openapi.json" },
+          }),
+        ]),
+      ),
+    /source\.url 不得包含用户名或密码/,
+  );
+  assert.throws(
+    () =>
+      validateConfig(
+        config([service("identity"), service("billing")], {
+          typeExports: {
+            strategy: "flat-strict",
+            aliases: [
+              { service: "identity", schema: "Identity.UserDto", exportAs: "User" },
+              { service: "billing", schema: "Billing.UserDto", exportAs: "User" },
+            ],
+          },
+        }),
+      ),
+    /导出目标 User 重复/,
+  );
+});
+
+test("source.url is fetched as the exact configured URL", async () => {
+  const originalFetch = globalThis.fetch;
+  const requested = [];
+  globalThis.fetch = async (input) => {
+    requested.push(String(input));
+    return new Response('{"openapi":"3.0.3"}', {
+      status: 200,
+      headers: { "content-type": "application/json; charset=utf-8" },
+    });
+  };
+  try {
+    const url = "https://schemas.example.test/custom/location/openapi.json?tenant=stable";
+    const result = await fetchSwaggerJson({ source: { url }, timeoutMs: 1_000 });
+    assert.equal(result.ok, true);
+    assert.equal(result.url, url);
+    assert.equal(result.text, '{"openapi":"3.0.3"}');
+    assert.deepEqual(requested, [url]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("download retries network/5xx failures but not deterministic response errors", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  try {
+    globalThis.fetch = async () => {
+      calls += 1;
+      return calls === 1
+        ? new Response("unavailable", { status: 503 })
+        : new Response("{}", { headers: { "content-type": "application/json" } });
+    };
+    assert.equal((await downloadJson("https://example.test/openapi.json", 1_000)).status, 200);
+    assert.equal(calls, 2);
+
+    calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      return new Response("missing", { status: 404 });
+    };
+    await assert.rejects(downloadJson("https://example.test/missing.json", 1_000), /HTTP 404/);
+    assert.equal(calls, 1);
+
+    calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      return new Response("{}", { headers: { "content-type": "text/plain" } });
+    };
+    await assert.rejects(
+      downloadJson("https://example.test/not-json.json", 1_000),
+      /Content-Type 不是 JSON/,
+    );
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("source.file decouples service ID from filename and source relocation is output-stable", async () => {
+  await withTempProject(async (root) => {
+    const openapi = document({
+      schemas: {
+        "Stable.ItemDto": {
+          type: "object",
+          required: ["id"],
+          properties: { id: { type: "string" } },
+        },
+      },
+    });
+    await mkdir(join(root, "inputs"), { recursive: true });
+    await writeFile(join(root, "inputs/backend-name.json"), JSON.stringify(openapi), "utf8");
+    const options = {
+      projectId: "demo",
+      swaggerDir: "swagger",
+      outputDir: "generated",
+    };
+    const fileConfig = config([
+      service("stable-service", { source: { file: "inputs/backend-name.json" } }),
+    ]);
+    await generate({ ...options, xapiForgeConfig: fileConfig });
+    const baseline = await readFile(join(root, "generated/demo/api-types.ts"), "utf8");
+    assert.match(baseline, /export namespace StableServiceSchemas/);
+
+    await rename(join(root, "inputs/backend-name.json"), join(root, "inputs/renamed-openapi.json"));
+    const relocated = await generate({
+      ...options,
+      xapiForgeConfig: config([
+        service("stable-service", { source: { file: "inputs/renamed-openapi.json" } }),
+      ]),
+    });
+    assert.equal(relocated.changed, false);
+
+    await mkdir(join(root, "swagger/demo"), { recursive: true });
+    await writeFile(
+      join(root, "swagger/demo/stable-service.json"),
+      JSON.stringify(openapi),
+      "utf8",
+    );
+    const remoteCache = await generate({
+      ...options,
+      xapiForgeConfig: config([
+        service("stable-service", {
+          // exactOptionalPropertyTypes 未必开启；显式 undefined 也必须走 URL 分支。
+          source: { url: "https://schemas.example.test/stable-service.json", file: undefined },
+        }),
+      ]),
+    });
+    assert.equal(remoteCache.changed, false);
+    assert.equal(await readFile(join(root, "generated/demo/api-types.ts"), "utf8"), baseline);
+  });
+});
+
+test("service and JSON object order never participate in generated identity", async () => {
+  await withTempProject(async (root) => {
+    const alpha = document({
+      paths: { "/alpha": { get: { responses: { 200: { description: "OK" } } } } },
+      schemas: {
+        AlphaDto: { type: "object", properties: { z: { type: "string" }, a: { type: "number" } } },
+      },
+    });
+    const beta = document({ schemas: { BetaDto: { type: "string" } } });
+    await writeSwagger(root, "alpha", alpha);
+    await writeSwagger(root, "beta", beta);
+    const options = { projectId: "demo", swaggerDir: "swagger", outputDir: "generated" };
+    await generate({
+      ...options,
+      xapiForgeConfig: config([service("beta"), service("alpha")]),
+    });
+
+    const reorderedAlpha = {
+      components: {
+        schemas: {
+          AlphaDto: {
+            properties: { a: { type: "number" }, z: { type: "string" } },
+            type: "object",
+          },
+        },
+      },
+      paths: { "/alpha": { get: { responses: { 200: { description: "OK" } } } } },
+      info: { version: "1.0.0", title: "Fixture" },
+      openapi: "3.0.3",
+    };
+    await writeSwagger(root, "alpha", reorderedAlpha);
+    const reordered = await generate({
+      ...options,
+      xapiForgeConfig: config([service("alpha"), service("beta")]),
+    });
+    assert.equal(reordered.changed, false);
+    assert.deepEqual(reordered.changedFiles, []);
+  });
 });
 
 test("generation reuses one normalized document for types, aliases, and endpoint metadata", async () => {
@@ -125,7 +333,13 @@ test("generation reuses one normalized document for types, aliases, and endpoint
       async transformTypes(content, context) {
         transformTypesCalls += 1;
         assert.ok(context.originalDocument.components.schemas.OldDto);
+        assert.equal(Object.isFrozen(context.originalDocument), true);
         assert.ok(context.normalizedDocument.components.schemas.NewDto);
+        assert.equal(Object.isFrozen(context.normalizedDocument), true);
+        assert.equal(Object.isFrozen(context.normalizedDocument.components.schemas.NewDto), true);
+        assert.throws(() => {
+          context.normalizedDocument.paths["/late-mutation"] = {};
+        }, TypeError);
         return `${content}\n// transformed once\n`;
       },
     };
@@ -160,6 +374,43 @@ test("generation reuses one normalized document for types, aliases, and endpoint
     assert.match(apiTypes, /NewDto/);
     assert.doesNotMatch(apiTypes, /OldDto/);
     assert.match(generatedIndex, /总 endpoint 数：1/);
+    assert.match(generatedIndex, /const service = api\.base/);
+    assert.doesNotMatch(generatedIndex, /\/api\/identity/);
+  });
+});
+
+test("canonicalization preserves special JSON keys and rejects non-JSON hook values", async () => {
+  await withTempProject(async (root) => {
+    const specialSchema = JSON.parse(
+      '{"type":"object","properties":{"__proto__":{"type":"string"}}}',
+    );
+    await writeSwagger(root, "base", document({ schemas: { SpecialDto: specialSchema } }));
+    await generate({
+      xapiForgeConfig: config([service("base")]),
+      projectId: "demo",
+      swaggerDir: "swagger",
+      outputDir: "generated",
+    });
+    const generated = await readFile(join(root, "generated/demo/types/base.ts"), "utf8");
+    assert.match(generated, /__proto__/);
+
+    await assert.rejects(
+      generate({
+        xapiForgeConfig: config([service("base")], {
+          hooks: {
+            async transformSwagger(swagger) {
+              swagger.components.schemas.SpecialDto.example = Number.NaN;
+              return swagger;
+            },
+          },
+        }),
+        projectId: "demo",
+        swaggerDir: "swagger",
+        outputDir: "generated-invalid-json",
+      }),
+      /OpenAPI 文档只能包含有限数字/,
+    );
+    assert.equal(existsSync(join(root, "generated-invalid-json")), false);
   });
 });
 
@@ -262,7 +513,51 @@ test("external references fail before writing generated output", async () => {
   });
 });
 
-test("layered client config applies defined service overrides and preserves flat config", async () => {
+test("internal references resolve escaped JSON Pointer tokens before generation", async () => {
+  await withTempProject(async (root) => {
+    await writeSwagger(
+      root,
+      "base",
+      document({
+        schemas: {
+          "Escaped/Name~Dto": {
+            type: "object",
+            required: ["id"],
+            properties: { id: { type: "string" } },
+          },
+          ConsumerDto: { $ref: "#/components/schemas/Escaped~1Name~0Dto" },
+        },
+      }),
+    );
+    await generate({
+      xapiForgeConfig: config([service("base")]),
+      projectId: "demo",
+      swaggerDir: "swagger",
+      outputDir: "generated",
+    });
+    const generated = await readFile(join(root, "generated/demo/types/base.ts"), "utf8");
+    assert.match(generated, /ConsumerDto/);
+
+    await writeSwagger(
+      root,
+      "base",
+      document({ schemas: { ConsumerDto: { $ref: "#/components/schemas/MissingDto" } } }),
+    );
+    const previous = await readFile(join(root, "generated/demo/api-types.ts"), "utf8");
+    await assert.rejects(
+      generate({
+        xapiForgeConfig: config([service("base")]),
+        projectId: "demo",
+        swaggerDir: "swagger",
+        outputDir: "generated",
+      }),
+      /内部 \$ref 无法解析："#\/components\/schemas\/MissingDto"/,
+    );
+    assert.equal(await readFile(join(root, "generated/demo/api-types.ts"), "utf8"), previous);
+  });
+});
+
+test("client config supports intentional simple and layered v2 forms", async () => {
   await withTempProject(async (root) => {
     const pingDocument = document({
       paths: {
@@ -440,18 +735,7 @@ test("multi-service schemas stay isolated through SchemasByService and SchemaOf"
         },
       }),
     );
-    const cfg = config([service("identity"), service("infrastructure")], {
-      typeExports: {
-        aliases: [
-          { service: "identity", schema: "Shared.UserDto", exportAs: "IdentityUser" },
-          {
-            service: "infrastructure",
-            schema: "Shared.UserDto",
-            exportAs: "InfrastructureUser",
-          },
-        ],
-      },
-    });
+    const cfg = config([service("identity"), service("infrastructure")]);
     await generate({
       xapiForgeConfig: cfg,
       projectId: "demo",
@@ -462,11 +746,10 @@ test("multi-service schemas stay isolated through SchemasByService and SchemaOf"
     const apiTypes = await readFile(join(root, "generated/demo/api-types.ts"), "utf8");
     assert.match(apiTypes, /export interface SchemasByService/);
     assert.match(apiTypes, /export type SchemaOf</);
-    assert.match(apiTypes, /export type IdentityUser = SchemaOf<"identity", "Shared\.UserDto">/);
-    assert.match(
-      apiTypes,
-      /export type InfrastructureUser = SchemaOf<"infrastructure", "Shared\.UserDto">/,
-    );
+    assert.match(apiTypes, /export namespace IdentitySchemas/);
+    assert.match(apiTypes, /export type UserDto = SchemaOf<"identity", "Shared\.UserDto">/);
+    assert.match(apiTypes, /export namespace InfrastructureSchemas/);
+    assert.match(apiTypes, /export type UserDto = SchemaOf<"infrastructure", "Shared\.UserDto">/);
     assert.doesNotMatch(apiTypes, /export type AllSchemas/);
 
     await writeFile(
@@ -502,15 +785,446 @@ void infrastructure;
   });
 });
 
-test("schema alias collisions fail with both identities and explicit aliases resolve them", async () => {
+test("prefix namespaces stay nested inside service namespaces and rule order is stable", async () => {
   await withTempProject(async (root) => {
-    for (const serviceName of ["identity", "infrastructure"]) {
-      await writeSwagger(
-        root,
-        serviceName,
-        document({ schemas: { "Shared.UserDto": { type: "object" } } }),
+    await writeSwagger(
+      root,
+      "base",
+      document({ schemas: { "Company.Module.UserDto": { type: "object" } } }),
+    );
+    const rules = [
+      { match: "Company.", namespace: "Company" },
+      { service: "base", match: "Company.Module.", namespace: "Module" },
+    ];
+    const options = { projectId: "demo", swaggerDir: "swagger", outputDir: "generated" };
+    await generate({
+      ...options,
+      xapiForgeConfig: config([service("base")], {
+        typeExports: { namespaces: rules },
+      }),
+    });
+    const baseline = await readFile(join(root, "generated/demo/api-types.ts"), "utf8");
+    assert.match(baseline, /export namespace BaseSchemas/);
+    assert.match(baseline, /  export namespace Module/);
+    assert.match(baseline, /export type UserDto = SchemaOf<"base", "Company\.Module\.UserDto">/);
+    assert.doesNotMatch(baseline, /  export namespace Company/);
+
+    const reordered = await generate({
+      ...options,
+      xapiForgeConfig: config([service("base")], {
+        typeExports: { namespaces: [...rules].reverse() },
+      }),
+    });
+    assert.equal(reordered.changed, false);
+  });
+});
+
+test("generic schema names stay canonical unless an explicit stable alias is configured", async () => {
+  await withTempProject(async (root) => {
+    const genericName = "Fixture.PagedResult`1[Fixture.ItemDto]";
+    await writeSwagger(
+      root,
+      "base",
+      document({
+        schemas: {
+          [genericName]: {
+            type: "object",
+            properties: { total: { type: "integer" } },
+          },
+        },
+      }),
+    );
+    await generate({
+      xapiForgeConfig: config([service("base")]),
+      projectId: "demo",
+      swaggerDir: "swagger",
+      outputDir: "generated",
+    });
+    let apiTypes = await readFile(join(root, "generated/demo/api-types.ts"), "utf8");
+    assert.doesNotMatch(apiTypes, /export type PagedResult/);
+
+    await writeFile(
+      join(root, "generic-usage.ts"),
+      `import type { SchemaOf } from "./generated/demo/api-types.js";
+const page: SchemaOf<"base", ${JSON.stringify(genericName)}> = { total: 1 };
+void page;
+`,
+      "utf8",
+    );
+    await writeFile(
+      join(root, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: "ES2022",
+          module: "ESNext",
+          moduleResolution: "Bundler",
+          skipLibCheck: true,
+        },
+        include: ["generic-usage.ts"],
+      }),
+      "utf8",
+    );
+    const compiled = spawnSync(process.execPath, [tscPath, "-p", join(root, "tsconfig.json")], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    assert.equal(compiled.status, 0, `${compiled.stdout}\n${compiled.stderr}`);
+
+    await generate({
+      xapiForgeConfig: config([service("base")], {
+        typeExports: {
+          aliases: [{ service: "base", schema: genericName, exportAs: "ItemPage" }],
+        },
+      }),
+      projectId: "demo",
+      swaggerDir: "swagger",
+      outputDir: "generated",
+    });
+    apiTypes = await readFile(join(root, "generated/demo/api-types.ts"), "utf8");
+    assert.match(apiTypes, /export type ItemPage = SchemaOf<"base"/);
+  });
+});
+
+test("a service with no components.schemas still has a valid canonical service entry", async () => {
+  await withTempProject(async (root) => {
+    await writeSwagger(root, "empty", {
+      openapi: "3.0.3",
+      info: { title: "Schema-less fixture", version: "1.0.0" },
+      paths: {},
+    });
+    await generate({
+      xapiForgeConfig: config([service("empty")]),
+      projectId: "demo",
+      swaggerDir: "swagger",
+      outputDir: "generated",
+    });
+    const apiTypes = await readFile(join(root, "generated/demo/api-types.ts"), "utf8");
+    assert.match(apiTypes, /"empty": EmptyComponents\["schemas"\]/);
+    assert.match(apiTypes, /export namespace EmptySchemas/);
+
+    await writeFile(
+      join(root, "empty-usage.ts"),
+      `import type { SchemasByService, ServiceName } from "./generated/demo/api-types.js";
+const service: ServiceName = "empty";
+type EmptySchemas = SchemasByService["empty"];
+type AssertNever<T extends never> = T;
+type EmptyServiceHasNoSchemas = AssertNever<EmptySchemas>;
+void service;
+`,
+      "utf8",
+    );
+    await writeFile(
+      join(root, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: "ES2022",
+          module: "ESNext",
+          moduleResolution: "Bundler",
+          skipLibCheck: true,
+        },
+        include: ["empty-usage.ts"],
+      }),
+      "utf8",
+    );
+    const compiled = spawnSync(process.execPath, [tscPath, "-p", join(root, "tsconfig.json")], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    assert.equal(compiled.status, 0, `${compiled.stdout}\n${compiled.stderr}`);
+  });
+});
+
+test("flat-strict emits project-level aliases and prefix namespaces", async () => {
+  await withTempProject(async (root) => {
+    await writeSwagger(
+      root,
+      "catalog",
+      document({
+        schemas: {
+          "Fixture.Catalog.ProductDto": {
+            type: "object",
+            required: ["id"],
+            properties: { id: { type: "string" } },
+          },
+          "Fixture.Shared.PageInfo": {
+            type: "object",
+            properties: { total: { type: "number" } },
+          },
+        },
+      }),
+    );
+    await writeSwagger(
+      root,
+      "billing",
+      document({
+        schemas: {
+          "Fixture.Billing.InvoiceDto": {
+            type: "object",
+            required: ["amount"],
+            properties: { amount: { type: "number" } },
+          },
+        },
+      }),
+    );
+    await generate({
+      xapiForgeConfig: config([service("catalog"), service("billing")], {
+        typeExports: {
+          strategy: "flat-strict",
+          namespaces: [{ service: "catalog", match: "Fixture.Catalog.", namespace: "Catalog" }],
+        },
+      }),
+      projectId: "demo",
+      swaggerDir: "swagger",
+      outputDir: "generated",
+    });
+
+    const apiTypes = await readFile(join(root, "generated/demo/api-types.ts"), "utf8");
+    assert.match(apiTypes, /export namespace Catalog/);
+    assert.match(
+      apiTypes,
+      /export type ProductDto = SchemaOf<"catalog", "Fixture\.Catalog\.ProductDto">/,
+    );
+    assert.match(
+      apiTypes,
+      /export type PageInfo = SchemaOf<"catalog", "Fixture\.Shared\.PageInfo">/,
+    );
+    assert.match(
+      apiTypes,
+      /export type InvoiceDto = SchemaOf<"billing", "Fixture\.Billing\.InvoiceDto">/,
+    );
+    assert.doesNotMatch(apiTypes, /export namespace (Catalog|Billing)Schemas/);
+
+    await writeFile(
+      join(root, "flat-usage.ts"),
+      `import type { Catalog, InvoiceDto, PageInfo } from "./generated/demo/api-types.js";
+const product: Catalog.ProductDto = { id: "p-1" };
+const invoice: InvoiceDto = { amount: 10 };
+const page: PageInfo = { total: 1 };
+void product;
+void invoice;
+void page;
+`,
+      "utf8",
+    );
+    await writeFile(
+      join(root, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: "ES2022",
+          module: "ESNext",
+          moduleResolution: "Bundler",
+          skipLibCheck: true,
+        },
+        include: ["flat-usage.ts"],
+      }),
+      "utf8",
+    );
+    const compiled = spawnSync(process.execPath, [tscPath, "-p", join(root, "tsconfig.json")], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    assert.equal(compiled.status, 0, `${compiled.stdout}\n${compiled.stderr}`);
+  });
+});
+
+test("flat-strict rejects cross-service and canonical-name collisions", async () => {
+  await withTempProject(async (root) => {
+    await writeSwagger(
+      root,
+      "identity",
+      document({ schemas: { "Identity.UserDto": { type: "object" } } }),
+    );
+    await writeSwagger(
+      root,
+      "billing",
+      document({ schemas: { "Billing.UserDto": { type: "object" } } }),
+    );
+    const services = [service("identity"), service("billing")];
+    await assert.rejects(
+      generate({
+        xapiForgeConfig: config(services, {
+          typeExports: { strategy: "flat-strict" },
+        }),
+        projectId: "demo",
+        swaggerDir: "swagger",
+        outputDir: "generated",
+      }),
+      (error) => {
+        assert.match(error.message, /schema alias 冲突：UserDto/);
+        assert.match(error.message, /billing\/Billing\.UserDto/);
+        assert.match(error.message, /identity\/Identity\.UserDto/);
+        return true;
+      },
+    );
+    assert.equal(existsSync(join(root, "generated")), false);
+
+    await generate({
+      xapiForgeConfig: config(services, {
+        typeExports: {
+          strategy: "flat-strict",
+          aliases: [{ service: "billing", schema: "Billing.UserDto", exportAs: "BillingUserDto" }],
+        },
+      }),
+      projectId: "demo",
+      swaggerDir: "swagger",
+      outputDir: "generated",
+    });
+    const resolved = await readFile(join(root, "generated/demo/api-types.ts"), "utf8");
+    assert.match(resolved, /export type UserDto = SchemaOf<"identity", "Identity\.UserDto">/);
+    assert.match(resolved, /export type BillingUserDto = SchemaOf<"billing", "Billing\.UserDto">/);
+
+    await writeSwagger(
+      root,
+      "identity",
+      document({ schemas: { "Fixture.SchemaOf": { type: "object" } } }),
+    );
+    await assert.rejects(
+      generate({
+        xapiForgeConfig: config([service("identity")], {
+          typeExports: { strategy: "flat-strict" },
+        }),
+        projectId: "demo",
+        swaggerDir: "swagger",
+        outputDir: "generated-reserved",
+      }),
+      /flat-strict 顶层名称 "SchemaOf" 与 canonical\/import 名称冲突/,
+    );
+
+    await writeSwagger(
+      root,
+      "identity",
+      document({
+        schemas: {
+          "Fixture.Group": { type: "object" },
+          "Fixture.Nested.ItemDto": { type: "object" },
+        },
+      }),
+    );
+    await assert.rejects(
+      generate({
+        xapiForgeConfig: config([service("identity")], {
+          typeExports: {
+            strategy: "flat-strict",
+            namespaces: [{ match: "Fixture.Nested.", namespace: "Group" }],
+          },
+        }),
+        projectId: "demo",
+        swaggerDir: "swagger",
+        outputDir: "generated-alias-namespace",
+      }),
+      /flat-strict 顶层 namespace "Group" 与同名 alias 冲突/,
+    );
+  });
+});
+
+test("adding, changing, or deleting an unrelated schema preserves stable public imports", async () => {
+  await withTempProject(async (root) => {
+    const stableSchema = {
+      type: "object",
+      required: ["id"],
+      properties: { id: { type: "string" } },
+    };
+    const variants = [
+      { "Stable.Dto": stableSchema, "Mutable.Dto": { type: "string" } },
+      {
+        "Added.FlagDto": { type: "boolean" },
+        "Stable.Dto": stableSchema,
+        "Mutable.Dto": { type: "number" },
+      },
+      { "Stable.Dto": stableSchema, "Added.FlagDto": { type: "boolean" } },
+    ];
+    const options = {
+      xapiForgeConfig: config([service("base")]),
+      projectId: "demo",
+      swaggerDir: "swagger",
+      outputDir: "generated",
+    };
+    const stableExport = 'export type Dto = SchemaOf<"base", "Stable.Dto">;';
+
+    // Mutable.Dto 与 Stable.Dto 的自动短名都叫 Dto；给 mutable identity 一个固定例外名。
+    options.xapiForgeConfig.projects[0].typeExports = {
+      aliases: [{ service: "base", schema: "Mutable.Dto", exportAs: "MutableDto" }],
+    };
+    await writeSwagger(root, "base", document({ schemas: variants[0] }));
+    await generate(options);
+    const baselineTypes = await readFile(join(root, "generated/demo/types/base.ts"), "utf8");
+    const baselineStableLines = baselineTypes
+      .split("\n")
+      .filter((line) => line.includes('"Stable.Dto"') || line.includes("id: string"));
+
+    for (const schemas of variants.slice(1)) {
+      // 删除 Mutable.Dto 时，相应显式 alias 也必须删除；Stable.Dto 的 identity 不变。
+      options.xapiForgeConfig.projects[0].typeExports =
+        "Mutable.Dto" in schemas
+          ? { aliases: [{ service: "base", schema: "Mutable.Dto", exportAs: "MutableDto" }] }
+          : undefined;
+      await writeSwagger(root, "base", document({ schemas }));
+      await generate(options);
+      const apiTypes = await readFile(join(root, "generated/demo/api-types.ts"), "utf8");
+      assert.ok(apiTypes.includes(stableExport));
+      const currentTypes = await readFile(join(root, "generated/demo/types/base.ts"), "utf8");
+      assert.deepEqual(
+        currentTypes
+          .split("\n")
+          .filter((line) => line.includes('"Stable.Dto"') || line.includes("id: string")),
+        baselineStableLines,
       );
     }
+
+    await writeFile(
+      join(root, "stable-usage.ts"),
+      `import type { BaseSchemas } from "./generated/demo/api-types.js";
+const stable: BaseSchemas.Dto = { id: "unchanged" };
+void stable;
+`,
+      "utf8",
+    );
+    await writeFile(
+      join(root, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: "ES2022",
+          module: "ESNext",
+          moduleResolution: "Bundler",
+          skipLibCheck: true,
+        },
+        include: ["stable-usage.ts"],
+      }),
+      "utf8",
+    );
+    const compiled = spawnSync(process.execPath, [tscPath, "-p", join(root, "tsconfig.json")], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    assert.equal(compiled.status, 0, `${compiled.stdout}\n${compiled.stderr}`);
+  });
+});
+
+test("only same-service alias collisions fail; explicit aliases resolve them", async () => {
+  await withTempProject(async (root) => {
+    await writeSwagger(
+      root,
+      "identity",
+      document({
+        schemas: {
+          "First.UserDto": { type: "object" },
+          "Second.UserDto": { type: "object" },
+        },
+      }),
+    );
+    await writeSwagger(
+      root,
+      "infrastructure",
+      document({ schemas: { "Shared.UserDto": { type: "object" } } }),
+    );
     const services = [service("identity"), service("infrastructure")];
     await assert.rejects(
       generate({
@@ -520,17 +1234,27 @@ test("schema alias collisions fail with both identities and explicit aliases res
         outputDir: "generated",
       }),
       (error) => {
-        assert.match(error.message, /schema alias 冲突：UserDto/);
-        assert.match(error.message, /identity\/Shared\.UserDto/);
-        assert.match(error.message, /infrastructure\/Shared\.UserDto/);
-        assert.match(
-          error.message,
-          /\{ service: "infrastructure", schema: "Shared\.UserDto", exportAs: "InfrastructureUserDto" \}/,
-        );
+        assert.match(error.message, /schema alias 冲突：IdentitySchemas\.UserDto/);
+        assert.match(error.message, /identity\/First\.UserDto/);
+        assert.match(error.message, /identity\/Second\.UserDto/);
         return true;
       },
     );
     assert.equal(existsSync(join(root, "generated")), false);
+
+    await generate({
+      xapiForgeConfig: config(services, {
+        typeExports: {
+          aliases: [{ service: "identity", schema: "First.UserDto", exportAs: "FirstUserDto" }],
+        },
+      }),
+      projectId: "demo",
+      swaggerDir: "swagger",
+      outputDir: "generated",
+    });
+    const apiTypes = await readFile(join(root, "generated/demo/api-types.ts"), "utf8");
+    assert.match(apiTypes, /export type FirstUserDto = SchemaOf<"identity", "First\.UserDto">/);
+    assert.match(apiTypes, /export type UserDto = SchemaOf<"infrastructure", "Shared\.UserDto">/);
 
     await assert.rejects(
       generate({
@@ -545,10 +1269,36 @@ test("schema alias collisions fail with both identities and explicit aliases res
       }),
       /显式 alias 指向不存在的 schema：identity\/MissingDto/,
     );
+
+    const previous = await readFile(join(root, "generated/demo/api-types.ts"), "utf8");
+    await writeSwagger(
+      root,
+      "identity",
+      document({
+        schemas: {
+          "Fixture.Group": { type: "object" },
+          "Fixture.Nested.ItemDto": { type: "object" },
+        },
+      }),
+    );
+    await assert.rejects(
+      generate({
+        xapiForgeConfig: config(services, {
+          typeExports: {
+            namespaces: [{ service: "identity", match: "Fixture.Nested.", namespace: "Group" }],
+          },
+        }),
+        projectId: "demo",
+        swaggerDir: "swagger",
+        outputDir: "generated",
+      }),
+      /IdentitySchemas 下 namespace "Group" 与同名 alias 冲突/,
+    );
+    assert.equal(await readFile(join(root, "generated/demo/api-types.ts"), "utf8"), previous);
   });
 });
 
-test("legacy multi-service AllSchemas refuses duplicate full schema names", async () => {
+test("canonical-only emits only service-scoped canonical schema access", async () => {
   await withTempProject(async (root) => {
     for (const serviceName of ["identity", "infrastructure"]) {
       await writeSwagger(
@@ -557,27 +1307,31 @@ test("legacy multi-service AllSchemas refuses duplicate full schema names", asyn
         document({ schemas: { "Shared.UserDto": { type: "object" } } }),
       );
     }
-    await assert.rejects(
-      generate({
-        xapiForgeConfig: config([service("identity"), service("infrastructure")], {
-          compatibility: { legacyAllSchemas: true },
-          typeExports: {
-            aliases: [
-              { service: "identity", schema: "Shared.UserDto", exportAs: "IdentityUser" },
-              {
-                service: "infrastructure",
-                schema: "Shared.UserDto",
-                exportAs: "InfrastructureUser",
-              },
-            ],
-          },
-        }),
-        projectId: "demo",
-        swaggerDir: "swagger",
-        outputDir: "generated",
-      }),
-      /legacyAllSchemas 无法安全生成/,
+    assert.throws(
+      () =>
+        validateConfig(
+          config([service("identity"), service("infrastructure")], {
+            typeExports: {
+              strategy: "canonical-only",
+              namespaces: [{ match: "Shared.", namespace: "Shared" }],
+            },
+          }),
+        ),
+      /strategy=canonical-only 不能同时配置 namespace 或 alias/,
     );
+    await generate({
+      xapiForgeConfig: config([service("identity"), service("infrastructure")], {
+        typeExports: { strategy: "canonical-only" },
+      }),
+      projectId: "demo",
+      swaggerDir: "swagger",
+      outputDir: "generated",
+    });
+    const apiTypes = await readFile(join(root, "generated/demo/api-types.ts"), "utf8");
+    assert.match(apiTypes, /export interface SchemasByService/);
+    assert.match(apiTypes, /export type SchemaOf</);
+    assert.doesNotMatch(apiTypes, /export namespace .*Schemas/);
+    assert.doesNotMatch(apiTypes, /AllSchemas/);
   });
 });
 
@@ -643,7 +1397,6 @@ test("generateMany prepares every project before writing any output", async () =
       await writeFile(join(directory, "base.json"), JSON.stringify(document()), "utf8");
     }
     const cfg = {
-      defaultPath: "/swagger/v1/swagger.json",
       timeoutMs: 15_000,
       outputDir: "swagger",
       mode: "offline",
@@ -651,14 +1404,12 @@ test("generateMany prepares every project before writing any output", async () =
         {
           name: "first",
           displayName: "First",
-          baseHost: "http://localhost",
-          services: [service("base")],
+          services: [service("base", { source: { file: "swagger/first/base.json" } })],
         },
         {
           name: "second",
           displayName: "Second",
-          baseHost: "http://localhost",
-          services: [service("base")],
+          services: [service("base", { source: { file: "swagger/second/base.json" } })],
           hooks: {
             async transformSwagger() {
               throw new Error("second project failed");

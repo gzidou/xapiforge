@@ -19,7 +19,6 @@ const legacyHookPath = join(repositoryRoot, "examples/demo-app/hooks/legacy-enum
 
 function config(hooks) {
   return {
-    defaultPath: "/swagger/v1/swagger.json",
     timeoutMs: 15_000,
     outputDir: "swagger",
     mode: "offline",
@@ -27,8 +26,14 @@ function config(hooks) {
       {
         name: "demo",
         displayName: "Enum fixture",
-        baseHost: "http://localhost",
-        services: [{ name: "base", displayName: "Base", port: 8787, hooks }],
+        services: [
+          {
+            name: "base",
+            displayName: "Base",
+            source: { file: "swagger/demo/base.json" },
+            hooks,
+          },
+        ],
       },
     ],
   };

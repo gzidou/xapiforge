@@ -30,7 +30,6 @@ Create `xapiforge.config.ts`:
 import { defineConfig } from "@xapiforge/genapi";
 
 export default defineConfig({
-  defaultPath: "/swagger/v1/swagger.json",
   timeoutMs: 15_000,
   outputDir: "swagger",
   genOutputDir: "src/api/gen",
@@ -38,8 +37,13 @@ export default defineConfig({
     {
       name: "myapp",
       displayName: "My Application",
-      baseHost: "http://localhost:8081",
-      services: [{ name: "base", displayName: "Base API", port: 8081 }]
+      services: [
+        {
+          name: "base",
+          displayName: "Base API",
+          source: { url: "http://localhost:8081/swagger/v1/swagger.json" }
+        }
+      ]
     }
   ]
 });
@@ -47,7 +51,7 @@ export default defineConfig({
 
 `genOutputDir` is optional and defaults to `src/api/gen`. Existing explicit output directories continue to work.
 
-Project and service IDs must use kebab-case. Every declared service is required and maps to `swagger/<project>/<service>.json` in offline mode.
+Project and service IDs must use kebab-case. Every service requires either `source.file` or `source.url`; URL sources use `swagger/<project>/<service>.json` as their offline cache.
 
 ## Generate
 
@@ -61,7 +65,7 @@ pnpm run generate:api -- --check
 
 ## Multi-service runtime config
 
-The legacy flat Core `NetConfig` remains supported:
+For one runtime endpoint, pass Core `NetConfig` directly:
 
 ```typescript
 const api = createMyappClient({ baseURL, authService, middleware });
@@ -83,7 +87,7 @@ const api = createMyappClient({
 
 Defined service values replace defaults. Middleware arrays are replaced, not concatenated.
 
-For multi-service types, use `SchemasByService` and `SchemaOf<Service, FullName>`. Multi-service projects no longer emit the unsafe `AllSchemas` intersection by default.
+Type exports have three explicit strategies: default `service-namespace` (`BaseSchemas.UserDto`), strict project-level `flat-strict` (`UserDto`, with generation failing on every same-scope collision), and `canonical-only`. Every strategy retains `SchemaOf<Service, FullName>`; v2 does not emit `AllSchemas`. Prefix namespaces are nested under the service in `service-namespace` and live at project top level in `flat-strict`.
 
 ## Runtime enums
 
@@ -97,6 +101,6 @@ const hooks = createRuntimeEnumHooks({
 });
 ```
 
-Legacy Swagger normalization belongs in a business `preprocessSwagger` hook; it is not a generator default.
+Non-standard Swagger normalization belongs in a business `transformSwagger` hook; it is not a generator default.
 
 For offline specifications and initialization, see the [browser onboarding guide](https://gzidou.github.io/xapiforge/getting-started/browser). For v2 multi-service configuration, aliases, transactions, hooks, and migration, see the [genapi v2 guide](https://gzidou.github.io/xapiforge/guides/genapi-v2).

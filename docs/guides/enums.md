@@ -48,12 +48,11 @@ export default defineConfig({
     {
       name: "portal",
       displayName: "Portal",
-      baseHost: "http://localhost:7001",
       services: [
         {
           name: "base",
           displayName: "Base API",
-          port: 7001,
+          source: { url: "http://localhost:7001/swagger/v1/swagger.json" },
           hooks: createRuntimeEnumHooks()
         }
       ]

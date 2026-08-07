@@ -1,185 +1,240 @@
-# genapi v2：单服务与多服务接入
+# genapi v2：多服务、稳定类型与明确来源
 
-genapi v2 把每个 OpenAPI service 视为独立类型域，并为同一 project 下的服务提供统一运行时入口。它不会跨 service 猜测或合并 schema。
+genapi v2 是破坏性版本，不保留旧的 Swagger URL 片段配置或旧类型导出。目标是让 OpenAPI 来源、service 身份和公开类型身份彼此独立，并在真实多微服务项目中保持可预测。
 
-## 先区分两个地址
-
-- `xapiforge.config.ts` 中的 `baseHost`、`services[].baseHost` 和 `port` 只用于 `xapiforge-fetch` 下载 Swagger。
-- `createXxxClient()` 的 `baseURL` 只用于应用运行时请求。
-
-生成器不会从下载地址推导运行时地址。测试、网关和生产环境应在应用初始化时分别注入。
-
-## 配置 project 与 service
-
-单服务：
+## 完整配置
 
 ```ts
 import { defineConfig } from "@xapiforge/genapi";
 
 export default defineConfig({
-  defaultPath: "/swagger/v1/swagger.json",
   timeoutMs: 15_000,
   outputDir: "swagger",
   genOutputDir: "src/api/gen",
-  mode: "offline",
+  mode: "online",
   projects: [
     {
-      name: "portal",
-      displayName: "Portal",
-      baseHost: "http://localhost:7001",
-      services: [{ name: "base", displayName: "Base API", port: 7001 }]
+      name: "dcenter",
+      displayName: "Dcenter",
+      services: [
+        {
+          name: "identity",
+          displayName: "Identity",
+          source: { url: "https://identity.example.test/openapi.json" }
+        },
+        {
+          name: "fill-center",
+          displayName: "Fill Center",
+          source: { file: "tmp/dcenter/FillCenter.json" }
+        }
+      ],
+      typeExports: {
+        strategy: "service-namespace",
+        namespaces: [
+          {
+            service: "fill-center",
+            match: "Company.Infrastructure.",
+            namespace: "Infrastructure"
+          }
+        ],
+        aliases: [
+          {
+            service: "identity",
+            schema: "Company.Identity.UserDto",
+            exportAs: "UserDto"
+          }
+        ]
+      }
     }
   ]
 });
 ```
 
-同一应用包含多个服务：
+## source：来源不是身份
+
+每个 service 必须配置且只能配置一种来源：
 
 ```ts
-services: [
-  { name: "identity", displayName: "Identity API", port: 7001 },
-  { name: "infrastructure", displayName: "Infrastructure API", port: 7002 }
-];
+const localSource = { file: "tmp/dcenter/OriginalBackendName.json" };
+// 或
+const remoteSource = { url: "https://api.example.test/openapi.json" };
 ```
 
-`project.name` 和 `service.name` 必须是 kebab-case ID，例如 `admin`、`file-service`。重复 ID、生成后 TypeScript 名称相同、非法 namespace 或 alias 都会在读取或写入产物前失败。
+- `service.name` 是稳定身份，决定生成文件名、客户端 key 和类型 namespace。
+- `source.file` 是磁盘位置；相对路径以运行 CLI 的项目根目录为基准。
+- `source.url` 是完整 HTTP(S) URL，不再拼接 host、port 或 path。
+- 修改文件名、目录或 URL，不会改变 service/type 身份。
 
-选择边界：
+`xapiforge-fetch` 的行为：
 
-| 情况                       | 建议                                    |
-| -------------------------- | --------------------------------------- |
-| 同一应用、同一认证生命周期 | 一个 project，多个 service              |
-| 服务地址不同，但认证一致   | 同一 project，覆盖 service `baseURL`    |
-| 认证生命周期或协议完全不同 | 拆成不同 project                        |
-| 只是 schema 同名           | 保持 service 隔离，不要为了名字强行合并 |
+- `source.file`：直接校验 JSON，不复制文件。
+- online 的 `source.url`：下载到 `outputDir/<project>/<service>.json`。
+- offline 的 `source.url`：读取上述缓存，不访问网络。
+- `--dry-run`：本地来源仍校验，远程来源只打印精确 URL 和缓存路径，不发请求、不写缓存。
+- 网络错误与 HTTP 5xx 默认重试一次；4xx、错误 Content-Type 或非法 JSON 不重试。
+- 下载缓存以同目录临时文件加 rename 替换，失败不会留下半个 JSON。
 
-## 下载、生成和检查
+## schema 的 canonical 身份
+
+唯一权威身份是：
+
+```text
+project ID + service ID + full schema name
+```
+
+同名 schema 只要属于不同 service，就不会合并，也不会冲突：
+
+```ts
+type IdentityUser = SchemaOf<"identity", "Shared.UserDto">;
+type InfrastructureUser = SchemaOf<"infrastructure", "Shared.UserDto">;
+```
+
+所有项目都会生成：
+
+```ts
+export interface SchemasByService {
+  identity: IdentityComponents["schemas"];
+  infrastructure: InfrastructureComponents["schemas"];
+}
+
+export type SchemaOf<Service extends keyof SchemasByService, Name extends keyof SchemasByService[Service]> = SchemasByService[Service][Name];
+```
+
+v2 不生成 `AllSchemas`，也不会把多个 service 的 schema 交叉合并。三种导出策略都保留这组 canonical API；差别只在是否额外生成便利短名。
+
+## 三种导出策略
+
+| strategy                    | 便利名称位置          | 短名碰撞范围            | 前缀 namespace         |
+| --------------------------- | --------------------- | ----------------------- | ---------------------- |
+| `service-namespace`（默认） | `<Service>Schemas` 内 | 单个 service 的同一层级 | service namespace 内层 |
+| `flat-strict`               | project 顶层          | 整个 project 的同一层级 | project 顶层           |
+| `canonical-only`            | 不生成                | 无便利短名              | 禁止配置               |
+
+`flat-strict` 是明确选择的严格平铺模式，不是旧版兼容开关。只要自动短名、显式 alias、prefix namespace 或 canonical 名称在同一作用域冲突，生成就失败；生成器不会按出现顺序保留一个。
+
+## 默认 service namespace
+
+默认策略是 `service-namespace`。每个 service 自动生成一个稳定外层 namespace，名称只由 service ID 推导：
+
+```ts
+export namespace IdentitySchemas {
+  export type UserDto = SchemaOf<"identity", "Shared.UserDto">;
+}
+
+export namespace InfrastructureSchemas {
+  export type UserDto = SchemaOf<"infrastructure", "Shared.UserDto">;
+}
+```
+
+业务侧使用：
+
+```ts
+import type { IdentitySchemas, InfrastructureSchemas } from "./api-types.js";
+
+const identity: IdentitySchemas.UserDto = { id: "user-1" };
+const infrastructure: InfrastructureSchemas.UserDto = { id: 1 };
+```
+
+因此，不同 service 中重复的 `UserDto` 不要求维护显式别名。
+
+## 前缀 namespace 放在哪里
+
+前缀规则的落点由 strategy 决定。默认 `service-namespace` 下，它位于 service namespace 内：
+
+```ts
+const typeExports = {
+  namespaces: [
+    {
+      service: "fill-center",
+      match: "Company.Infrastructure.",
+      namespace: "Infrastructure"
+    }
+  ]
+};
+```
+
+生成：
+
+```ts
+export namespace FillCenterSchemas {
+  export namespace Infrastructure {
+    export type OrganizationUnitDto = SchemaOf<"fill-center", "Company.Infrastructure.OrganizationUnitDto">;
+  }
+}
+```
+
+规则匹配不依赖数组顺序：
+
+1. service 专属规则优先于 project 通用规则；
+2. 同一优先级选择最长前缀；
+3. 仍等价时按稳定字典序决定。
+
+重新排列配置不会移动既有类型。
+
+`flat-strict` 下，同一条规则生成 project 顶层 namespace：
+
+```ts
+const typeExports = {
+  strategy: "flat-strict" as const,
+  namespaces: [{ service: "catalog", match: "Company.Catalog.", namespace: "Catalog" }]
+};
+```
+
+```ts
+export namespace Catalog {
+  export type ProductDto = SchemaOf<"catalog", "Company.Catalog.ProductDto">;
+}
+
+export type InvoiceDto = SchemaOf<"billing", "Company.Billing.InvoiceDto">;
+```
+
+此模式适合确认整个 project 的短名天然唯一、并希望保持简短 import 的项目。一旦后来新增 schema 造成同作用域碰撞，生成会明确失败，要求业务选择显式 alias；它不会悄悄改变已有类型指向。
+
+## canonical-only
+
+只需要无歧义的底层入口时：
+
+```ts
+const typeExports = { strategy: "canonical-only" as const };
+```
+
+此模式只输出 `SchemasByService`、`ServiceName` 和 `SchemaOf`，不输出任何便利 namespace。它不能同时配置 `namespaces` 或 `aliases`。
+
+## 类型稳定性合同
+
+genapi 保证以下变化不改变未受影响 identity 的访问路径：
+
+- service 配置顺序变化；
+- OpenAPI JSON 对象 key 顺序变化；
+- `source.file` 改名或移动；
+- `source.file` 与等价 `source.url` 缓存之间切换；
+- 其他 service 增加、删除或修改 schema；
+- 同一 service 中增加、删除或修改一个不在目标 schema 依赖闭包内的 schema。
+
+稳定性边界：
+
+- 修改 service ID 会改变 namespace、客户端 key 和文件名，这是显式破坏。
+- 修改 full schema name 会改变 canonical identity，这是显式破坏。
+- 修改目标 schema 本身，或修改它通过 `$ref` 依赖的 schema，目标类型必须变化。
+- project 级集合类型（例如 `ServiceName`）会随 service 集合变化；已有成员的字面量和值不会被重命名。
+- 显式修改 `typeExports.namespaces` 或 `aliases` 是主动修改公开便利路径。
+
+生成器会递归排序 JSON 对象 key、保留数组顺序，并按稳定 service/schema 顺序渲染。冲突会在正式写盘前失败；不会按出现顺序静默跳过，也不会自动追加后缀。
+
+## 验证
 
 ```bash
 pnpm download-swagger
-pnpm generate:api portal
-pnpm run generate:api -- --check
+pnpm generate:api dcenter
+pnpm generate:api dcenter -- --check
 ```
 
-`--check` 完全只读：它在内存中准备预期产物并与正式目录比较；无差异返回 0，有漂移返回非 0 并列出文件。未知参数也会失败。
+`--check` 只比较 staging 与正式产物，不写正式目录。生成采用整 project 事务替换；任何 service、hook、类型或 alias 失败时，旧产物保持不变。
 
-正式生成采用 project 级事务替换：所有 service、类型和 manifest 先准备成功，再替换旧目录。中断事务会在下一次生成前恢复；已移除 service 的旧文件随目录替换一起清理。
-
-```text
-src/api/gen/portal/
-├── index.ts
-├── api-types.ts
-├── manifest.json
-└── types/
-    ├── identity.ts
-    └── infrastructure.ts
-```
-
-`manifest.json` 记录生成器、TypeScript、openapi-typescript、esbuild 版本以及每个规范化 OpenAPI 文档的 hash，不记录当前时间，因此相同输入产生相同输出。
-
-## 无歧义地访问类型
-
-每个 service 的原始类型始终保留在独立文件：
-
-```ts
-import type { components as IdentityComponents } from "./gen/portal/types/identity.js";
-```
-
-`api-types.ts` 提供 canonical API：
-
-```ts
-import type { SchemaOf } from "./gen/portal/api-types.js";
-
-type IdentityUser = SchemaOf<"identity", "Sample.Identity.UserDto">;
-type InfrastructureUser = SchemaOf<"infrastructure", "Sample.Infrastructure.UserDto">;
-```
-
-多 service 默认不生成 `AllSchemas`。短 alias 或 namespace 只是便利导出；发生冲突时生成器直接列出两个 service 和 full schema name，不静默跳过或自动改名。
-
-需要固定公开名时在 project 上显式配置：
-
-```ts
-typeExports: {
-  namespaces: [
-    { service: "infrastructure", match: "Sample.Infrastructure.", namespace: "Infrastructure" }
-  ],
-  aliases: [
-    {
-      service: "identity",
-      schema: "Sample.Identity.UserDto",
-      exportAs: "IdentityUser"
-    }
-  ]
-}
-```
-
-短期兼容旧 `AllSchemas` 时可设置 `compatibility.legacyAllSchemas: true`，但仅在所有 service 的 full schema name 全局唯一时允许生成，并带有 deprecated 标记。新代码不要依赖它。
-
-## 初始化生成客户端
-
-旧的平铺配置仍然可用：
-
-```ts
-const api = createPortalClient({
-  baseURL: env.API_URL,
-  authService,
-  middleware: [commonMiddleware]
-});
-```
-
-多地址使用分层配置：
-
-```ts
-const api = createPortalClient({
-  defaults: {
-    baseURL: env.API_GATEWAY_URL,
-    authService,
-    middleware: [commonMiddleware],
-    maxRetries: 2,
-    retryDelayMs,
-    logger
-  },
-  services: {
-    infrastructure: {
-      baseURL: env.INFRASTRUCTURE_API_URL,
-      middleware: [infrastructureMiddleware]
-    }
-  }
-});
-```
-
-规则固定为 `service override > defaults`，且只有值不为 `undefined` 的字段才覆盖。数组不自动拼接；service 提供 `middleware` 时是整体替换。第一阶段 `validateStatus` 和 `resolveErrorMessage` 保持 project defaults 级。
-
-生成客户端直接复用 Core `NetConfig`，不会遗漏 `fetch`、超时、重试、`retryDelayMs` 或 `logger`。
-
-## 枚举与业务 hooks
-
-标准 OpenAPI 枚举默认由 openapi-typescript 生成 literal union。需要运行时常量时显式启用：
-
-```ts
-import { createRuntimeEnumHooks } from "@xapiforge/genapi";
-
-{
-  name: "infrastructure",
-  displayName: "Infrastructure API",
-  port: 7002,
-  hooks: createRuntimeEnumHooks({
-    metadata: {
-      "Sample.AccessMode": { isFlags: true }
-    }
-  })
-}
-```
-
-helper 只处理标准 `enum` + `x-enum-varnames`，可选读取 `x-enum-labels`。`isFlags` 会让 API 字段保持 `number`，runtime map 仍只列出声明值，组合值由业务代码使用位运算。
-
-非标准历史格式必须先由业务 `preprocessSwagger` 规范化。可复制示例位于 `examples/demo-app/hooks/legacy-enum.ts`；它只挂在 demo 的 legacy service，不进入通用默认链路。详见[枚举](./enums.md)和 [genapi Hooks](./genapi-hooks.md)。
-
-## CI 建议
+示例网页必须通过开发服务器访问：
 
 ```bash
-pnpm run generate:api -- --check
-pnpm typecheck
+pnpm --filter '@xapiforge/example-demo-app' dev
 ```
 
-升级 `openapi-typescript`、TypeScript 或 esbuild 时应单独提交锁文件与生成 diff，并运行完整消费者编译。仓库维护命令见[维护入口](../internals/maintenance.md)。
+不要双击 `index.html` 以 `file://` 打开；ES module 会被浏览器的同源策略阻止。

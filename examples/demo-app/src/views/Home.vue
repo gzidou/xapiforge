@@ -1,17 +1,17 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from "vue";
 import { useRouter } from "vue-router";
-import type {
-  AppManagementDto,
-  FileEntityDto,
-  RoleDto,
-  UserCreateDto,
-  UserDto,
-  UserUpdateDto,
-} from "../api/gen/demo/api-types.js";
+import type { BaseSchemas, InfrastructureSchemas } from "../api/gen/demo/api-types.js";
 import { unwrapAbpPaged, type PagedList } from "../utils/paged.js";
 import { localStorageStore } from "@xapiforge/adapter-browser";
 import { useApi } from "../api/index.js";
+
+type AppManagementDto = InfrastructureSchemas.AppManagementDto;
+type FileEntityDto = BaseSchemas.FileEntityDto;
+type RoleDto = BaseSchemas.RoleDto;
+type UserCreateDto = BaseSchemas.UserCreateDto;
+type UserDto = BaseSchemas.UserDto;
+type UserUpdateDto = BaseSchemas.UserUpdateDto;
 
 /**
  * Demo 业务 API demo —— openapi-fetch × @xapiforge/core
@@ -38,8 +38,9 @@ import { useApi } from "../api/index.js";
  *        返回 FileEntityDto
  *
  * 类型推导：
- *   import type { UserDto } from "../api/gen/demo/api-types.js";
- *   // ↑ 自动从 components.schemas 导出的 alias，字段拼错立刻报错
+ *   import type { BaseSchemas } from "../api/gen/demo/api-types.js";
+ *   type UserDto = BaseSchemas.UserDto;
+ *   // ↑ service namespace 隔离同名 schema，字段拼错立刻报错
  *
  *   await api.base.GET("/api/identity/users/{id}", { params: { path: { id } } });
  *   //       ^ openapi-typescript 生成的 paths 类型，path 必须合法 + path param 必填

@@ -35,7 +35,6 @@ pnpm add -D @xapiforge/genapi --registry http://localhost:4873
 import { defineConfig } from "@xapiforge/genapi";
 
 export default defineConfig({
-  defaultPath: "/swagger/v1/swagger.json",
   timeoutMs: 15_000,
   outputDir: "swagger",
   genOutputDir: "src/api/gen",
@@ -44,8 +43,13 @@ export default defineConfig({
     {
       name: "myapp",
       displayName: "My Application",
-      baseHost: "http://localhost:7001",
-      services: [{ name: "base", displayName: "Base API", port: 7001 }]
+      services: [
+        {
+          name: "base",
+          displayName: "Base API",
+          source: { url: "http://localhost:7001/swagger/v1/swagger.json" }
+        }
+      ]
     }
   ]
 });
@@ -55,22 +59,20 @@ export default defineConfig({
 
 字段说明：
 
-| 字段                  | 必填 | 说明                                        |
-| --------------------- | ---- | ------------------------------------------- |
-| `name`                | 是   | 项目 ID，同时作为目录名，建议使用英文短码   |
-| `displayName`         | 是   | 日志中展示的名称                            |
-| `baseHost`            | 是   | 后端主机，不带末尾 `/`                      |
-| `services[].name`     | 是   | 服务 ID，同时作为 swagger 文件名            |
-| `services[].port`     | 是   | 服务端口                                    |
-| `services[].path`     | 否   | 覆盖项目的 `defaultPath`                    |
-| `services[].baseHost` | 否   | 服务部署在其他主机时，覆盖项目的 `baseHost` |
+| 字段                     | 必填   | 说明                                                        |
+| ------------------------ | ------ | ----------------------------------------------------------- |
+| `name`                   | 是     | 项目 ID，同时作为目录名，建议使用稳定英文短码               |
+| `displayName`            | 是     | 日志中展示的名称                                            |
+| `services[].name`        | 是     | 稳定 service ID；决定生成目录、类型身份和 service namespace |
+| `services[].source.url`  | 二选一 | 完整 HTTP(S) OpenAPI URL                                    |
+| `services[].source.file` | 二选一 | 本地 JSON；相对路径以配置文件所在项目根目录为基准           |
 
 `mode` 有两种用途：
 
-- `online`：`xapiforge-fetch` 从后端下载 swagger.json。
-- `offline`：跳过网络下载，直接使用 `swagger/<project>/<service>.json`。
+- `online`：只下载 `source.url` 到 `outputDir/<project>/<service>.json`；`source.file` 仍直接读取。
+- `offline`：不访问网络。`source.url` 读取上述缓存，`source.file` 读取其配置路径。
 
-例如上面的 `myapp/base` 在离线模式下对应：
+例如上面的 URL source 在离线模式下对应：
 
 ```text
 swagger/myapp/base.json

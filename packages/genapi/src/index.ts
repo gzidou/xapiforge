@@ -8,7 +8,7 @@
  *      components.schemas 导 schema 名 alias
  *
  * 关键设计（基于跨项目研究数据）：
- *   - 调用形式：apiDemo.base.GET("/api/identity/users/{id}", { params: { path: { id } } })
+ *   - 调用形式：api.<service>.GET/POST；path、参数和 body 由该 service OpenAPI 约束
  *     method/path/pathParam/query/body 全强类型（拼错立刻报）
  *   - 按 service 拆 client 而非合并 paths —— ABP swagger 把公共 endpoint 复制到每个 service，
  *     合并 `paths & paths` 会触发 TS2300 "Named property not identical"
@@ -30,8 +30,25 @@
 import { mkdir, open, readFile, readdir, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import openapiTS, { astToString, type OpenAPI3 } from "openapi-typescript";
+import { canonicalizeOpenApi, canonicalOpenApiHash, freezeOpenApi } from "./canonical-openapi.js";
+import {
+  lexicalCompare,
+  pascalCaseConfigId,
+  safeRuntimeKey,
+  TYPESCRIPT_RESERVED_WORDS,
+} from "./naming.js";
+import { resolveSwaggerInputPath, type SwaggerSource } from "./swagger-source.js";
+import { renderApiTypes, type ProjectTypeExportConfig } from "./type-exports.js";
+
+export type { SwaggerFileSource, SwaggerSource, SwaggerUrlSource } from "./swagger-source.js";
+export type {
+  NamespaceRule,
+  ProjectTypeExportConfig,
+  SchemaAliasRule,
+  TypeExportStrategy,
+} from "./type-exports.js";
 
 // ---------- 语义类型 ----------
 
@@ -42,9 +59,8 @@ export function defineConfig(config: XApiForgeConfig): XApiForgeConfig {
 export interface ServiceConfig {
   name: string;
   displayName: string;
-  port: number;
-  path?: string;
-  baseHost?: string;
+  /** OpenAPI 来源。file 相对配置文件所在目录；url 必须是完整 HTTP(S) URL。 */
+  source: SwaggerSource;
   /**
    * service 级 hooks（可选，覆盖 XApiForgeConfig.hooks）。
    *
@@ -61,63 +77,14 @@ export interface ServiceConfig {
 export interface ProjectConfig {
   name: string;
   displayName: string;
-  baseHost: string;
   services: ServiceConfig[];
   /** project 级 hooks（service 未显式配置时优先于 root hooks）。 */
   hooks?: GenapiHooks;
   /** v2 schema 便利导出规则。 */
   typeExports?: ProjectTypeExportConfig;
-  /** 临时兼容开关；新项目不应开启。 */
-  compatibility?: GenapiCompatibilityConfig;
-}
-
-/**
- * 命名空间前缀映射（可选）。
- *
- * 把匹配指定前缀的 schema 归入 TypeScript namespace，组内用短名。
- * 未匹配的 schema 退化为全局短名（无 namespace）。
- *
- * 例：{ match: 'Example.Module.', namespace: 'Module' }
- *   → schema 'Example.Module.ItemDto' 归入 namespace Module，内部 alias = 'ItemDto'
- *   → import type { Module } from '@/api/gen/demo/api-types'
- *   → Module.ItemDto
- *
- * 通用机制：纯字符串前缀匹配，不限定后端框架（ABP / SpringBoot / NestJS 等均可）。
- */
-export interface NamespacePrefixAlias {
-  /** Schema full-name prefix to match（如 'Example.Module.'） */
-  match: string;
-  /** Namespace name to group matching schemas under（如 'Module'） */
-  namespace: string;
-}
-
-export interface NamespaceRule {
-  /** 仅匹配指定 service；省略表示 project 内所有 service。 */
-  service?: string;
-  match: string;
-  namespace: string;
-}
-
-export interface SchemaAliasRule {
-  service: string;
-  schema: string;
-  exportAs: string;
-  namespace?: string;
-}
-
-export interface ProjectTypeExportConfig {
-  collisionPolicy?: "error";
-  namespaces?: NamespaceRule[];
-  aliases?: SchemaAliasRule[];
-}
-
-export interface GenapiCompatibilityConfig {
-  /** @deprecated 多 service 下临时保留旧 AllSchemas；仅允许 schema full name 全局唯一。 */
-  legacyAllSchemas?: boolean;
 }
 
 export interface XApiForgeConfig {
-  defaultPath: string;
   timeoutMs: number;
   outputDir: string;
   /** 生成产物根目录；CLI 默认使用 `src/api/gen`。 */
@@ -132,20 +99,6 @@ export interface XApiForgeConfig {
    * 而非读 JSON，所以不影响。后续如需拆出 GenapiConfig 类型可重构。
    */
   hooks?: GenapiHooks;
-  /**
-   * 命名空间前缀映射（可选），用于 api-types.ts 分组导出。
-   *
-   * 把匹配指定前缀的 schema 归入 TypeScript namespace，组内用短名。
-   * 未匹配的 schema 退化为全局短名。
-   *
-   * 通用机制：纯字符串前缀匹配，不限定后端框架（ABP / SpringBoot 等）。
-   *
-   * 例：{ match: 'Example.Module.', namespace: 'Module' }
-   *   → 'Example.Module.ItemDto' 归入 namespace Module
-   *   → 业务侧：import type { Module } from '@/api/gen/demo/api-types'
-   *            然后 Module.ItemDto
-   */
-  namespacePrefixAliases?: NamespacePrefixAlias[];
 }
 
 // ---------- genapi hooks 扩展点 ----------
@@ -280,45 +233,6 @@ interface TransactionState {
 
 const CONFIG_ID_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const TYPESCRIPT_IDENTIFIER_PATTERN = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
-const TYPESCRIPT_RESERVED_WORDS = new Set([
-  "break",
-  "case",
-  "catch",
-  "class",
-  "const",
-  "continue",
-  "debugger",
-  "default",
-  "delete",
-  "do",
-  "else",
-  "enum",
-  "export",
-  "extends",
-  "false",
-  "finally",
-  "for",
-  "function",
-  "if",
-  "import",
-  "in",
-  "instanceof",
-  "new",
-  "null",
-  "return",
-  "super",
-  "switch",
-  "this",
-  "throw",
-  "true",
-  "try",
-  "typeof",
-  "var",
-  "void",
-  "while",
-  "with",
-  "yield",
-]);
 const HTTP_METHODS = new Set(["get", "put", "post", "delete", "options", "head", "patch", "trace"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -327,6 +241,31 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function configError(message: string): Error {
   return new Error(`[genapi] 配置错误：${message}`);
+}
+
+function rejectRemovedFields(
+  value: Record<string, unknown>,
+  path: string,
+  fields: readonly string[],
+): void {
+  const present = fields.filter((field) => value[field] !== undefined);
+  if (present.length > 0) {
+    throw configError(`${path} 包含 v2 已移除字段：${present.join(", ")}`);
+  }
+}
+
+function assertAllowedFields(
+  value: Record<string, unknown>,
+  path: string,
+  allowedFields: readonly string[],
+): void {
+  const allowed = new Set(allowedFields);
+  const unknown = Object.keys(value)
+    .filter((field) => !allowed.has(field))
+    .sort(lexicalCompare);
+  if (unknown.length > 0) {
+    throw configError(`${path} 包含未知字段：${unknown.join(", ")}`);
+  }
 }
 
 function assertNonEmptyString(value: unknown, path: string): asserts value is string {
@@ -352,6 +291,7 @@ function assertTypeScriptIdentifier(value: unknown, path: string): asserts value
 function validateHooks(value: unknown, path: string): void {
   if (value === undefined) return;
   if (!isRecord(value)) throw configError(`${path} 必须是对象`);
+  assertAllowedFields(value, path, ["transformSwagger", "transformTypes"]);
   for (const key of ["transformSwagger", "transformTypes"] as const) {
     const hook = value[key];
     if (hook !== undefined && typeof hook !== "function") {
@@ -360,10 +300,52 @@ function validateHooks(value: unknown, path: string): void {
   }
 }
 
+function validateSwaggerSource(value: unknown, path: string): void {
+  if (!isRecord(value)) throw configError(`${path} 必须是对象`);
+  const unknownKeys = Object.keys(value).filter((key) => key !== "file" && key !== "url");
+  if (unknownKeys.length > 0) {
+    throw configError(`${path} 包含未知字段：${unknownKeys.sort().join(", ")}`);
+  }
+  const hasFile = value.file !== undefined;
+  const hasUrl = value.url !== undefined;
+  if (hasFile === hasUrl) {
+    throw configError(`${path} 必须且只能配置 file 或 url 其中一个`);
+  }
+  if (hasFile) {
+    assertNonEmptyString(value.file, `${path}.file`);
+    if (!value.file.toLowerCase().endsWith(".json")) {
+      throw configError(`${path}.file 必须指向 .json 文件`);
+    }
+    return;
+  }
+
+  assertNonEmptyString(value.url, `${path}.url`);
+  let parsed: URL;
+  try {
+    parsed = new URL(value.url);
+  } catch {
+    throw configError(`${path}.url 必须是完整 URL`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw configError(`${path}.url 只支持 http: 或 https:`);
+  }
+  if (parsed.username || parsed.password) {
+    throw configError(`${path}.url 不得包含用户名或密码`);
+  }
+}
+
 /** 在 CLI 或 programmatic generate 写文件前执行完整运行时配置校验。 */
 export function validateConfig(config: XApiForgeConfig): void {
   if (!isRecord(config)) throw configError("根配置必须是对象");
-  assertNonEmptyString(config.defaultPath, "defaultPath");
+  rejectRemovedFields(config, "根配置", ["defaultPath", "namespacePrefixAliases"]);
+  assertAllowedFields(config, "根配置", [
+    "genOutputDir",
+    "hooks",
+    "mode",
+    "outputDir",
+    "projects",
+    "timeoutMs",
+  ]);
   assertNonEmptyString(config.outputDir, "outputDir");
   if (config.genOutputDir !== undefined) {
     assertNonEmptyString(config.genOutputDir, "genOutputDir");
@@ -376,22 +358,31 @@ export function validateConfig(config: XApiForgeConfig): void {
   }
   validateHooks(config.hooks, "hooks");
 
-  if (!Array.isArray(config.projects)) throw configError("projects 必须是数组");
+  if (!Array.isArray(config.projects) || config.projects.length === 0) {
+    throw configError("projects 必须是非空数组");
+  }
   const projectIds = new Set<string>();
   const projectTypeNames = new Map<string, string>();
   for (const [projectIndex, project] of config.projects.entries()) {
     const projectPath = `projects[${projectIndex}]`;
     if (!isRecord(project)) throw configError(`${projectPath} 必须是对象`);
+    rejectRemovedFields(project, projectPath, ["baseHost", "compatibility"]);
+    assertAllowedFields(project, projectPath, [
+      "displayName",
+      "hooks",
+      "name",
+      "services",
+      "typeExports",
+    ]);
     assertConfigId(project.name, `${projectPath}.name`);
     assertNonEmptyString(project.displayName, `${projectPath}.displayName`);
-    assertNonEmptyString(project.baseHost, `${projectPath}.baseHost`);
     validateHooks(project.hooks, `${projectPath}.hooks`);
 
     if (projectIds.has(project.name)) {
       throw configError(`project ID 重复："${project.name}"`);
     }
     projectIds.add(project.name);
-    const projectTypeName = cap(project.name);
+    const projectTypeName = pascalCaseConfigId(project.name);
     const previousProjectId = projectTypeNames.get(projectTypeName);
     if (previousProjectId) {
       throw configError(
@@ -409,15 +400,11 @@ export function validateConfig(config: XApiForgeConfig): void {
     for (const [serviceIndex, service] of project.services.entries()) {
       const servicePath = `${projectPath}.services[${serviceIndex}]`;
       if (!isRecord(service)) throw configError(`${servicePath} 必须是对象`);
+      rejectRemovedFields(service, servicePath, ["baseHost", "port", "path"]);
+      assertAllowedFields(service, servicePath, ["displayName", "hooks", "name", "source"]);
       assertConfigId(service.name, `${servicePath}.name`);
       assertNonEmptyString(service.displayName, `${servicePath}.displayName`);
-      if (!Number.isInteger(service.port) || service.port < 1 || service.port > 65_535) {
-        throw configError(`${servicePath}.port 必须是 1 到 65535 的整数`);
-      }
-      if (service.path !== undefined) assertNonEmptyString(service.path, `${servicePath}.path`);
-      if (service.baseHost !== undefined) {
-        assertNonEmptyString(service.baseHost, `${servicePath}.baseHost`);
-      }
+      validateSwaggerSource(service.source, `${servicePath}.source`);
       validateHooks(service.hooks, `${servicePath}.hooks`);
 
       if (serviceIds.has(service.name)) {
@@ -425,7 +412,7 @@ export function validateConfig(config: XApiForgeConfig): void {
       }
       serviceIds.add(service.name);
 
-      const serviceTypeName = cap(service.name);
+      const serviceTypeName = pascalCaseConfigId(service.name);
       const previousTypeId = serviceTypeNames.get(serviceTypeName);
       if (previousTypeId) {
         throw configError(
@@ -434,7 +421,7 @@ export function validateConfig(config: XApiForgeConfig): void {
       }
       serviceTypeNames.set(serviceTypeName, service.name);
 
-      const runtimeKey = safeKey(service.name);
+      const runtimeKey = safeRuntimeKey(service.name);
       const previousRuntimeId = runtimeKeys.get(runtimeKey);
       if (previousRuntimeId) {
         throw configError(
@@ -444,27 +431,25 @@ export function validateConfig(config: XApiForgeConfig): void {
       runtimeKeys.set(runtimeKey, service.name);
     }
 
-    if (project.compatibility !== undefined) {
-      if (!isRecord(project.compatibility)) {
-        throw configError(`${projectPath}.compatibility 必须是对象`);
-      }
-      if (
-        project.compatibility.legacyAllSchemas !== undefined &&
-        typeof project.compatibility.legacyAllSchemas !== "boolean"
-      ) {
-        throw configError(`${projectPath}.compatibility.legacyAllSchemas 必须是 boolean`);
-      }
-    }
-
     if (project.typeExports !== undefined) {
       if (!isRecord(project.typeExports)) {
         throw configError(`${projectPath}.typeExports 必须是对象`);
       }
+      rejectRemovedFields(project.typeExports, `${projectPath}.typeExports`, ["collisionPolicy"]);
+      assertAllowedFields(project.typeExports, `${projectPath}.typeExports`, [
+        "aliases",
+        "namespaces",
+        "strategy",
+      ]);
+      const strategy = project.typeExports.strategy ?? "service-namespace";
       if (
-        project.typeExports.collisionPolicy !== undefined &&
-        project.typeExports.collisionPolicy !== "error"
+        strategy !== "canonical-only" &&
+        strategy !== "flat-strict" &&
+        strategy !== "service-namespace"
       ) {
-        throw configError(`${projectPath}.typeExports.collisionPolicy 目前只支持 "error"`);
+        throw configError(
+          `${projectPath}.typeExports.strategy 只能是 canonical-only、flat-strict 或 service-namespace`,
+        );
       }
 
       const namespaceRules = project.typeExports.namespaces ?? [];
@@ -475,6 +460,7 @@ export function validateConfig(config: XApiForgeConfig): void {
       for (const [index, rule] of namespaceRules.entries()) {
         const rulePath = `${projectPath}.typeExports.namespaces[${index}]`;
         if (!isRecord(rule)) throw configError(`${rulePath} 必须是对象`);
+        assertAllowedFields(rule, rulePath, ["match", "namespace", "service"]);
         if (rule.service !== undefined) {
           assertConfigId(rule.service, `${rulePath}.service`);
           if (!serviceIds.has(rule.service)) {
@@ -503,6 +489,7 @@ export function validateConfig(config: XApiForgeConfig): void {
       for (const [index, rule] of aliasRules.entries()) {
         const rulePath = `${projectPath}.typeExports.aliases[${index}]`;
         if (!isRecord(rule)) throw configError(`${rulePath} 必须是对象`);
+        assertAllowedFields(rule, rulePath, ["exportAs", "namespace", "schema", "service"]);
         assertConfigId(rule.service, `${rulePath}.service`);
         if (!serviceIds.has(rule.service)) {
           throw configError(`${rulePath}.service "${rule.service}" 不属于 project ${project.name}`);
@@ -517,7 +504,8 @@ export function validateConfig(config: XApiForgeConfig): void {
           throw configError(`${rulePath} 重复配置 schema ${rule.service}/${rule.schema}`);
         }
         aliasedSchemas.add(schemaKey);
-        const targetKey = `${rule.namespace ?? ""}\u0000${rule.exportAs}`;
+        const targetScope = strategy === "service-namespace" ? rule.service : "*";
+        const targetKey = `${targetScope}\u0000${rule.namespace ?? ""}\u0000${rule.exportAs}`;
         if (aliasTargets.has(targetKey)) {
           throw configError(
             `${rulePath} 的导出目标 ${rule.namespace ? `${rule.namespace}.` : ""}${rule.exportAs} 重复`,
@@ -525,34 +513,11 @@ export function validateConfig(config: XApiForgeConfig): void {
         }
         aliasTargets.add(targetKey);
       }
-    }
-  }
-
-  if (config.namespacePrefixAliases !== undefined) {
-    if (!Array.isArray(config.namespacePrefixAliases)) {
-      throw configError("namespacePrefixAliases 必须是数组");
-    }
-    const matches = new Map<string, string>();
-    const namespaces = new Map<string, string>();
-    for (const [index, alias] of config.namespacePrefixAliases.entries()) {
-      const aliasPath = `namespacePrefixAliases[${index}]`;
-      if (!isRecord(alias)) throw configError(`${aliasPath} 必须是对象`);
-      assertNonEmptyString(alias.match, `${aliasPath}.match`);
-      assertTypeScriptIdentifier(alias.namespace, `${aliasPath}.namespace`);
-      const previousNamespace = matches.get(alias.match);
-      if (previousNamespace) {
+      if (strategy === "canonical-only" && (namespaceRules.length > 0 || aliasRules.length > 0)) {
         throw configError(
-          `${aliasPath}.match "${alias.match}" 已映射到 namespace "${previousNamespace}"`,
+          `${projectPath}.typeExports.strategy=canonical-only 不能同时配置 namespace 或 alias`,
         );
       }
-      matches.set(alias.match, alias.namespace);
-      const previousMatch = namespaces.get(alias.namespace);
-      if (previousMatch) {
-        throw configError(
-          `namespace "${alias.namespace}" 同时匹配 "${previousMatch}" 和 "${alias.match}"`,
-        );
-      }
-      namespaces.set(alias.namespace, alias.match);
     }
   }
 }
@@ -569,9 +534,43 @@ function assertOpenApiDocument(value: unknown, label: string): asserts value is 
   }
 }
 
-function assertInternalReferencesOnly(document: OpenAPI3, label: string): void {
+function decodeReferenceFragment(reference: string, label: string): string {
+  try {
+    return decodeURIComponent(reference.slice(1));
+  } catch {
+    throw new Error(`[genapi] ${label} 的内部 $ref URI fragment 无效："${reference}"`);
+  }
+}
+
+function resolveJsonPointer(
+  document: OpenAPI3,
+  fragment: string,
+  reference: string,
+  label: string,
+): void {
+  let current: unknown = document;
+  for (const encodedToken of fragment.slice(1).split("/")) {
+    if (/~(?:[^01]|$)/.test(encodedToken)) {
+      throw new Error(`[genapi] ${label} 的内部 $ref JSON Pointer 转义无效："${reference}"`);
+    }
+    const token = encodedToken.replace(/~1/g, "/").replace(/~0/g, "~");
+    if (
+      typeof current !== "object" ||
+      current === null ||
+      !Object.prototype.hasOwnProperty.call(current, token)
+    ) {
+      throw new Error(`[genapi] ${label} 的内部 $ref 无法解析："${reference}"`);
+    }
+    current = (current as Record<string, unknown>)[token];
+  }
+}
+
+/** 拒绝外部引用，并确保内部 JSON Pointer/OpenAPI 3.1 anchor 均可解析。 */
+function assertReferencesResolvable(document: OpenAPI3, label: string): void {
   const pending: unknown[] = [document];
   const visited = new Set<object>();
+  const references: string[] = [];
+  const anchors = new Set<string>();
   while (pending.length > 0) {
     const current = pending.pop();
     if (typeof current !== "object" || current === null || visited.has(current)) continue;
@@ -581,10 +580,29 @@ function assertInternalReferencesOnly(document: OpenAPI3, label: string): void {
       continue;
     }
     for (const [key, value] of Object.entries(current)) {
-      if (key === "$ref" && typeof value === "string" && !value.startsWith("#")) {
-        throw new Error(`[genapi] ${label} 暂不支持外部 $ref："${value}"`);
+      if (key === "$ref" && typeof value === "string") {
+        references.push(value);
+      }
+      if (key === "$anchor" && typeof value === "string") {
+        if (anchors.has(value)) {
+          throw new Error(`[genapi] ${label} 包含重复的 OpenAPI 3.1 $anchor："${value}"`);
+        }
+        anchors.add(value);
       }
       pending.push(value);
+    }
+  }
+
+  for (const reference of references) {
+    if (!reference.startsWith("#")) {
+      throw new Error(`[genapi] ${label} 暂不支持外部 $ref："${reference}"`);
+    }
+    if (reference === "#") continue;
+    const fragment = decodeReferenceFragment(reference, label);
+    if (fragment.startsWith("/")) {
+      resolveJsonPointer(document, fragment, reference, label);
+    } else if (!anchors.has(fragment)) {
+      throw new Error(`[genapi] ${label} 的内部 $ref anchor 无法解析："${reference}"`);
     }
   }
 }
@@ -599,19 +617,24 @@ function resolveHooks(
   return rootHooks;
 }
 
-function sha256(value: string): string {
-  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
-}
-
 async function loadServiceModels(
   project: ProjectConfig,
-  swaggerDir: string,
+  swaggerRoot: string,
+  configDirectory: string,
   outDir: string,
   rootHooks: GenapiHooks | undefined,
 ): Promise<ServiceModel[]> {
   const models: ServiceModel[] = [];
-  for (const service of project.services) {
-    const swaggerFile = join(swaggerDir, `${service.name}.json`);
+  const services = [...project.services].sort((left, right) =>
+    lexicalCompare(left.name, right.name),
+  );
+  for (const service of services) {
+    const swaggerFile = resolveSwaggerInputPath({
+      configDirectory,
+      swaggerRoot,
+      projectId: project.name,
+      service,
+    });
     if (!existsSync(swaggerFile)) {
       throw new Error(`[genapi] required Swagger 缺失：${swaggerFile}`);
     }
@@ -623,7 +646,7 @@ async function loadServiceModels(
       throw new Error(`[genapi] 无法解析 ${swaggerFile}`, { cause });
     }
     assertOpenApiDocument(parsed, `${project.name}/${service.name} 原始文档`);
-    const originalDocument = parsed;
+    const originalDocument = freezeOpenApi(parsed);
     const hooks = resolveHooks(service, project, rootHooks);
     const hookContext: GenapiHookContext = {
       projectId: project.name,
@@ -642,23 +665,25 @@ async function loadServiceModels(
       );
     }
     assertOpenApiDocument(transformed, `${project.name}/${service.name} 规范化文档`);
-    assertInternalReferencesOnly(transformed, `${project.name}/${service.name}`);
-    hookContext.normalizedDocument = transformed;
-    const tagMap = extractTags(transformed);
+    assertReferencesResolvable(transformed, `${project.name}/${service.name}`);
+    const normalizedDocument = freezeOpenApi(canonicalizeOpenApi(transformed));
+    hookContext.normalizedDocument = normalizedDocument;
+    const tagMap = extractTags(normalizedDocument);
     const endpointCount = Object.values(tagMap).reduce(
       (count, operations) => count + operations.length,
       0,
     );
-    const components = transformed.components as { schemas?: Record<string, unknown> } | undefined;
+    const components = normalizedDocument.components as
+      { schemas?: Record<string, unknown> } | undefined;
     models.push({
       config: service,
       originalDocument,
-      document: transformed,
+      document: normalizedDocument,
       schemas: components?.schemas ?? {},
       serviceInfo: { name: service.name, tagMap, endpointCount },
       hooks,
       hookContext,
-      normalizedDocumentHash: sha256(JSON.stringify(transformed)),
+      normalizedDocumentHash: canonicalOpenApiHash(normalizedDocument),
     });
   }
   return models;
@@ -690,11 +715,8 @@ async function buildProjectArtifacts(opts: GenerateOptions): Promise<ProjectArti
   assertNonEmptyString(opts.swaggerDir, "GenerateOptions.swaggerDir");
   assertNonEmptyString(opts.outputDir, "GenerateOptions.outputDir");
   const swaggerRoot = resolve(process.cwd(), opts.swaggerDir);
-  const swaggerDir = resolve(swaggerRoot, project.name);
-  assertPathInside(swaggerRoot, swaggerDir, `project ${project.name} Swagger 路径`);
-  if (!existsSync(swaggerDir)) {
-    throw new Error(`swagger directory not found: ${swaggerDir}`);
-  }
+  const swaggerProjectDir = resolve(swaggerRoot, project.name);
+  assertPathInside(swaggerRoot, swaggerProjectDir, `project ${project.name} Swagger 路径`);
 
   const outputRoot = resolve(process.cwd(), opts.outputDir);
   const outDir = resolve(outputRoot, project.name);
@@ -702,7 +724,13 @@ async function buildProjectArtifacts(opts: GenerateOptions): Promise<ProjectArti
   const rootHooks = opts.hooks !== undefined ? opts.hooks : opts.xapiForgeConfig.hooks;
 
   // 所有 service 和文件内容先在内存中准备完成；失败时不创建正式输出目录。
-  const serviceModels = await loadServiceModels(project, swaggerDir, outDir, rootHooks);
+  const serviceModels = await loadServiceModels(
+    project,
+    swaggerRoot,
+    process.cwd(),
+    outDir,
+    rootHooks,
+  );
   const files = new Map<string, string>();
 
   // 1. openapi-typescript → types/<svc>.ts。所有步骤复用同一份 hook 后文档。
@@ -718,26 +746,21 @@ async function buildProjectArtifacts(opts: GenerateOptions): Promise<ProjectArti
   const serviceInfos = serviceModels.map((model) => model.serviceInfo);
 
   // 3. 写 index.ts —— openapi-fetch 形式的业务对象
-  const indexContent = renderIndex(
-    project.name,
-    project.displayName,
-    project.baseHost,
-    serviceInfos,
-    serviceNames,
-  );
+  const indexContent = renderIndex(project.name, project.displayName, serviceInfos, serviceNames);
   files.set("index.ts", normalizeLineEndings(indexContent));
 
   // 4. 写 api-types.ts —— components.schemas 导 alias
   const emitTypes = opts.emitApiTypes !== false; // 默认 true
   if (emitTypes) {
-    const apiTypesContent = renderApiTypes(
-      project.name,
-      project.displayName,
-      serviceModels,
-      project.typeExports,
-      project.compatibility,
-      opts.xapiForgeConfig.namespacePrefixAliases,
-    );
+    const apiTypesContent = renderApiTypes({
+      projectId: project.name,
+      projectDisplay: project.displayName,
+      services: serviceModels.map((model) => ({
+        name: model.config.name,
+        schemas: model.schemas,
+      })),
+      typeExports: project.typeExports,
+    });
     files.set("api-types.ts", normalizeLineEndings(apiTypesContent));
   }
 
@@ -826,10 +849,6 @@ export async function generate(opts: GenerateOptions): Promise<GenerateResult> {
 
 function normalizeLineEndings(content: string): string {
   return content.replace(/\r\n?/g, "\n");
-}
-
-function lexicalCompare(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 async function loadGeneratorMetadata(): Promise<{
@@ -1174,7 +1193,9 @@ async function commitProjectArtifacts(
 async function runOpenapiTypescript(document: OpenAPI3): Promise<string> {
   // 直接调用依赖的程序 API，不依赖消费者项目是否把传递依赖的 bin 提升到
   // node_modules/.bin。这样 npm、pnpm（含 isolated linker）和 yarn 项目行为一致。
-  const ast = await openapiTS(document);
+  // Redocly bundler 会改写输入（例如重挂 components），因此只给它权威 normalized
+  // document 的一次性 clone；不重新读取、规范化或执行 hook。
+  const ast = await openapiTS(structuredClone(document));
   return astToString(ast);
 }
 
@@ -1205,27 +1226,15 @@ function extractTags(document: OpenAPI3): Record<string, TagInfo[]> {
 
 // ---------- 模板渲染 ----------
 
-function cap(s: string): string {
-  // "my-service" → "MyService"
-  return s
-    .split(/[-_]/)
-    .map((p) => (p ? p.charAt(0).toUpperCase() + p.slice(1) : ""))
-    .join("");
-}
-
-function safeKey(name: string): string {
-  return name.replace(/[^A-Za-z0-9_$]/g, "_");
-}
-
 function renderIndex(
   projectId: string,
   projectDisplay: string,
-  projectBaseHost: string,
   services: ServiceInfo[],
   serviceNames: string[],
 ): string {
   const totalEndpoints = services.reduce((n, s) => n + s.endpointCount, 0);
-  const firstServiceKey = safeKey(serviceNames[0] ?? "service");
+  const firstServiceKey = safeRuntimeKey(serviceNames[0] ?? "service");
+  const projectTypeName = pascalCaseConfigId(projectId);
 
   const parts: string[] = [];
 
@@ -1252,17 +1261,16 @@ function renderIndex(
   parts.push(" *");
   parts.push(" * 用法：");
   parts.push(
-    ` *   import { create${cap(projectId)}Client } from "./api/gen/${projectId}/index.js";`,
+    ` *   import { create${projectTypeName}Client } from "./api/gen/${projectId}/index.js";`,
   );
-  parts.push(` *   const api = create${cap(projectId)}Client({`);
-  parts.push(` *     baseURL: "${projectBaseHost}",`);
+  parts.push(` *   const api = create${projectTypeName}Client({`);
+  parts.push(' *     baseURL: "https://api.example.invalid",');
   parts.push(" *     authService,           // AuthService 实例");
   parts.push(" *     middleware: [abpUnwrapMw],  // 业务侧 envelope 解包");
   parts.push(" *     maxRetries: 3,         // 429 场景配 3");
   parts.push(" *   });");
-  parts.push(
-    ` *   await api.${firstServiceKey}.GET("/api/identity/users/{id}", { params: { path: { id } } });`,
-  );
+  parts.push(` *   const service = api.${firstServiceKey};`);
+  parts.push(" *   // service.GET/POST 的 path、参数和 body 均由该 service OpenAPI 约束。");
   parts.push(" *");
   parts.push(" * 重新生成：");
   parts.push(` *   pnpm generate:api ${projectId}`);
@@ -1275,14 +1283,16 @@ function renderIndex(
   parts.push('import type { NetClient, NetConfig, ValidateStatus } from "@xapiforge/core";');
   parts.push("");
   for (const svc of serviceNames) {
-    parts.push(`import type { paths as ${cap(svc)}Paths } from "./types/${svc}.js";`);
+    parts.push(
+      `import type { paths as ${pascalCaseConfigId(svc)}Paths } from "./types/${svc}.js";`,
+    );
   }
   parts.push("");
 
   // 暴露 service 自己的 paths 类型（业务侧偶尔需要按 path 字面量取 schema）
   for (const svc of serviceNames) {
     parts.push(`/** ${svc} service paths 类型（按 HTTP path 字面量索引） */`);
-    parts.push(`export type ${cap(svc)}Path = ${cap(svc)}Paths;`);
+    parts.push(`export type ${pascalCaseConfigId(svc)}Path = ${pascalCaseConfigId(svc)}Paths;`);
   }
   parts.push("");
 
@@ -1294,20 +1304,14 @@ function renderIndex(
   parts.push(" * - 内核自动注入：auth/retry + validateStatus；最终失败统一抛 ApiError");
   parts.push(" * - 业务侧 middleware（envelope 解包）通过 defaults 注入，service 可显式整体替换");
   parts.push(" *");
-  parts.push(" * 调用形式（method/path/body 全强类型）：");
-  parts.push(
-    ` *   api.${firstServiceKey}.GET("/api/identity/users/{id}", { params: { path: { id } } });`,
-  );
-  parts.push(
-    ` *   api.${firstServiceKey}.POST("/api/identity/users", { body: { userName: "x", ... } });`,
-  );
+  parts.push(" * 调用形式：api.<service>.GET/POST；method/path/body 均由对应 OpenAPI 强类型约束。");
   parts.push(" */");
   parts.push(
-    `export type Api${cap(projectId)}ServiceName = ${serviceNames.map((name) => JSON.stringify(name)).join(" | ")};`,
+    `export type Api${projectTypeName}ServiceName = ${serviceNames.map((name) => JSON.stringify(name)).join(" | ")};`,
   );
   parts.push("");
   parts.push("/** service 级允许覆盖的 Core 配置；middleware 数组为替换语义，不会自动拼接。 */");
-  parts.push(`export type Api${cap(projectId)}ServiceOverrides = Partial<`);
+  parts.push(`export type Api${projectTypeName}ServiceOverrides = Partial<`);
   parts.push(`  Pick<`);
   parts.push(`    NetConfig,`);
   parts.push(
@@ -1316,29 +1320,29 @@ function renderIndex(
   parts.push(`  >`);
   parts.push(`>;`);
   parts.push("");
-  parts.push(`export interface Api${cap(projectId)}LayeredClientConfig {`);
+  parts.push(`export interface Api${projectTypeName}LayeredClientConfig {`);
   parts.push(`  /** project 默认配置；validateStatus 与 resolveErrorMessage 保持 project 级。 */`);
   parts.push(`  defaults: NetConfig;`);
   parts.push(`  /** service override 仅覆盖值不为 undefined 的字段。 */`);
   parts.push(`  services?: Partial<`);
-  parts.push(`    Record<Api${cap(projectId)}ServiceName, Api${cap(projectId)}ServiceOverrides>`);
+  parts.push(`    Record<Api${projectTypeName}ServiceName, Api${projectTypeName}ServiceOverrides>`);
   parts.push(`  >;`);
   parts.push("}");
   parts.push("");
-  parts.push(`/** 兼容旧的平铺 NetConfig，也支持 defaults/services 分层配置。 */`);
+  parts.push(`/** 支持直接传 NetConfig，或按 defaults/services 分层配置。 */`);
   parts.push(
-    `export type Api${cap(projectId)}ClientConfig = NetConfig | Api${cap(projectId)}LayeredClientConfig;`,
+    `export type Api${projectTypeName}ClientConfig = NetConfig | Api${projectTypeName}LayeredClientConfig;`,
   );
   parts.push("");
-  parts.push(`export type Api${cap(projectId)}ClientConfigWithCustomStatus =`);
+  parts.push(`export type Api${projectTypeName}ClientConfigWithCustomStatus =`);
   parts.push(`  | (NetConfig & { validateStatus: ValidateStatus })`);
-  parts.push(`  | (Omit<Api${cap(projectId)}LayeredClientConfig, "defaults"> & {`);
+  parts.push(`  | (Omit<Api${projectTypeName}LayeredClientConfig, "defaults"> & {`);
   parts.push(`      defaults: NetConfig & { validateStatus: ValidateStatus };`);
   parts.push(`    });`);
   parts.push("");
-  parts.push(`function merge${cap(projectId)}ServiceConfig(`);
+  parts.push(`function merge${projectTypeName}ServiceConfig(`);
   parts.push(`  defaults: NetConfig,`);
-  parts.push(`  override: Api${cap(projectId)}ServiceOverrides | undefined,`);
+  parts.push(`  override: Api${projectTypeName}ServiceOverrides | undefined,`);
   parts.push(`): NetConfig {`);
   parts.push(`  if (!override) return defaults;`);
   parts.push(`  return {`);
@@ -1366,15 +1370,15 @@ function renderIndex(
   parts.push(`}`);
   parts.push("");
 
-  parts.push(`export function create${cap(projectId)}Client(`);
-  parts.push(`  config: Api${cap(projectId)}ClientConfigWithCustomStatus,`);
-  parts.push(`): Api${cap(projectId)}<true>;`);
-  parts.push(`export function create${cap(projectId)}Client(`);
-  parts.push(`  config: Api${cap(projectId)}ClientConfig,`);
-  parts.push(`): Api${cap(projectId)}<false>;`);
-  parts.push(`export function create${cap(projectId)}Client(`);
-  parts.push(`  config: Api${cap(projectId)}ClientConfig,`);
-  parts.push(`): Api${cap(projectId)}<boolean> {`);
+  parts.push(`export function create${projectTypeName}Client(`);
+  parts.push(`  config: Api${projectTypeName}ClientConfigWithCustomStatus,`);
+  parts.push(`): Api${projectTypeName}<true>;`);
+  parts.push(`export function create${projectTypeName}Client(`);
+  parts.push(`  config: Api${projectTypeName}ClientConfig,`);
+  parts.push(`): Api${projectTypeName}<false>;`);
+  parts.push(`export function create${projectTypeName}Client(`);
+  parts.push(`  config: Api${projectTypeName}ClientConfig,`);
+  parts.push(`): Api${projectTypeName}<boolean> {`);
   parts.push(`  const layered = "defaults" in config;`);
   parts.push(`  const defaults = layered ? config.defaults : config;`);
   parts.push(`  const serviceOverrides = layered ? config.services : undefined;`);
@@ -1383,7 +1387,7 @@ function renderIndex(
   for (const s of services) {
     parts.push(`    /** ${s.name}（${s.endpointCount} endpoints） */`);
     parts.push(
-      `    ${safeKey(s.name)}: createNet<${cap(s.name)}Paths>(merge${cap(projectId)}ServiceConfig(defaults, serviceOverrides?.[${JSON.stringify(s.name)}])),`,
+      `    ${safeRuntimeKey(s.name)}: createNet<${pascalCaseConfigId(s.name)}Paths>(merge${projectTypeName}ServiceConfig(defaults, serviceOverrides?.[${JSON.stringify(s.name)}])),`,
     );
   }
   parts.push("  };");
@@ -1391,10 +1395,12 @@ function renderIndex(
   parts.push("");
 
   // Api{Proj} 接口导出 —— 默认 data 仅含 2xx；自定义 validateStatus 时增加 error response 类型
-  parts.push(`export interface Api${cap(projectId)}<HasCustomStatus extends boolean = false> {`);
+  parts.push(`export interface Api${projectTypeName}<HasCustomStatus extends boolean = false> {`);
   for (const s of services) {
     parts.push(`  /** ${s.name} */`);
-    parts.push(`  ${safeKey(s.name)}: NetClient<${cap(s.name)}Paths, HasCustomStatus>;`);
+    parts.push(
+      `  ${safeRuntimeKey(s.name)}: NetClient<${pascalCaseConfigId(s.name)}Paths, HasCustomStatus>;`,
+    );
   }
   parts.push("}");
   parts.push("");
@@ -1402,245 +1408,8 @@ function renderIndex(
   return parts.join("\n");
 }
 
-/**
- * 生成 api-types.ts —— 按 components.schemas 导 schema alias
- *
- * 命名策略：
- *   - 默认取 full schema name 最后一段作为便利 alias
- *   - alias 或 namespace 冲突直接失败，不按 service 顺序静默跳过或自动改名
- *   - `typeExports.aliases` 可给指定 service/full schema 配置稳定公开名
- *
- * 业务侧：
- *   import type { IdentityUserDto, IdentityUserCreateDto } from "@/api/gen/demo/api-types";
- *   type Resp = paths["/api/identity/users/{id}"]["get"]["responses"]["200"]["content"]["application/json"];
- *   // 或直接：
- *   type Resp2 = IdentityUserDto;
- */
-function renderApiTypes(
-  projectId: string,
-  projectDisplay: string,
-  serviceModels: ServiceModel[],
-  typeExports?: ProjectTypeExportConfig,
-  compatibility?: GenapiCompatibilityConfig,
-  namespacePrefixAliases?: NamespacePrefixAlias[],
-): string {
-  const lines: string[] = [];
-  const serviceNames = serviceModels.map((model) => model.config.name);
-
-  lines.push("/* eslint-disable */");
-  lines.push("/**");
-  lines.push(` * @${projectId}/api-types — 自动生成，别手改`);
-  lines.push(" *");
-  lines.push(` * 数据源：openapi-typescript 生成的 components.schemas（见 ./types/<service>.ts）`);
-  lines.push(` * 项目：${projectDisplay}（${projectId}），service 数：${serviceNames.length}`);
-  lines.push(" *");
-  const namespaceRules = typeExports?.namespaces ?? [];
-  if (namespaceRules.length > 0 || (namespacePrefixAliases?.length ?? 0) > 0) {
-    lines.push(" * 命名空间分组：");
-    for (const rule of namespaceRules) {
-      lines.push(
-        ` *   ${rule.service ? `${rule.service}: ` : ""}${rule.match} → namespace ${rule.namespace}`,
-      );
-    }
-    for (const rule of namespacePrefixAliases ?? []) {
-      lines.push(` *   [legacy] ${rule.match} → namespace ${rule.namespace}`);
-    }
-    lines.push(" *");
-  }
-  lines.push(" * 字段拼错立刻报错；swagger 改了 → pnpm generate:api → 类型自动同步。");
-  lines.push(" */");
-  lines.push("");
-
-  // 收集所有 schemas（每 service 一份 components，可能有同 full 名重复）
-  type SchemaRef = { svc: string; full: string };
-  const collected: SchemaRef[] = [];
-  for (const model of serviceModels) {
-    for (const schemaName of Object.keys(model.schemas)) {
-      collected.push({ svc: model.config.name, full: schemaName });
-    }
-  }
-
-  // helper：取 schema 名最后一段"可作为 TS alias"的子串
-  // .NET 泛型 schema 名带反引号 `ListResultDto`1[[...]]`，无法做 TS alias，直接跳
-  // 0.1.42.0 之类的纯数字/点结尾段，跳过直到找到字母段
-  function shortAlias(full: string): string {
-    if (full.includes("`")) return ""; // 跳过 .NET 泛型 metadata schema
-    const parts = full.split(/[.[\], ]+/).filter(Boolean);
-    // 从末往前找一个"以字母或下划线开头"的段
-    for (let i = parts.length - 1; i >= 0; i--) {
-      const p = parts[i]!;
-      if (/^[A-Za-z_$]/.test(p)) return p;
-    }
-    return "";
-  }
-  function safeAlias(raw: string): string {
-    // 用 safeKey 过滤非法字符；数字开头或 TypeScript 保留字统一前缀 _。
-    const k = raw.replace(/[^A-Za-z0-9_$]/g, "_");
-    return /^[0-9]/.test(k) || TYPESCRIPT_RESERVED_WORDS.has(k) ? `_${k}` : k;
-  }
-
-  // 命名空间匹配按配置顺序执行；project 级规则优先于 legacy root 规则。
-  function matchNamespace(service: string, full: string): string | null {
-    for (const rule of namespaceRules) {
-      if ((rule.service === undefined || rule.service === service) && full.startsWith(rule.match)) {
-        return rule.namespace;
-      }
-    }
-    for (const rule of namespacePrefixAliases ?? []) {
-      if (full.startsWith(rule.match)) return rule.namespace;
-    }
-    return null;
-  }
-
-  interface ExportEntry {
-    namespace: string | null;
-    alias: string;
-    full: string;
-    svc: string;
-  }
-
-  const explicitAliases = new Map(
-    (typeExports?.aliases ?? []).map((rule) => [`${rule.service}\u0000${rule.schema}`, rule]),
-  );
-  for (const rule of typeExports?.aliases ?? []) {
-    const model = serviceModels.find((candidate) => candidate.config.name === rule.service)!;
-    if (!(rule.schema in model.schemas)) {
-      throw new Error(
-        `[genapi] 显式 alias 指向不存在的 schema：${rule.service}/${rule.schema} → ${rule.exportAs}`,
-      );
-    }
-  }
-
-  const exportTargets = new Map<string, ExportEntry>();
-  const byNamespace = new Map<string, ExportEntry[]>();
-  const flatEntries: ExportEntry[] = [];
-  const addExport = (entry: ExportEntry): void => {
-    const target = `${entry.namespace ?? ""}\u0000${entry.alias}`;
-    const previous = exportTargets.get(target);
-    if (previous) {
-      const qualified = entry.namespace ? `${entry.namespace}.${entry.alias}` : entry.alias;
-      throw new Error(
-        `[genapi] schema alias 冲突：${qualified}\n` +
-          `  - ${previous.svc}/${previous.full}\n` +
-          `  - ${entry.svc}/${entry.full}\n` +
-          "请在 projects[].typeExports.aliases 中为至少一个 schema 配置唯一 exportAs，例如：\n" +
-          `  { service: ${JSON.stringify(entry.svc)}, schema: ${JSON.stringify(entry.full)}, exportAs: ${JSON.stringify(`${cap(entry.svc)}${entry.alias}`)} }`,
-      );
-    }
-    if (entry.namespace === null && byNamespace.has(entry.alias)) {
-      throw new Error(`[genapi] 顶层 alias "${entry.alias}" 与同名 namespace 冲突`);
-    }
-    if (
-      entry.namespace !== null &&
-      flatEntries.some((candidate) => candidate.alias === entry.namespace)
-    ) {
-      throw new Error(`[genapi] namespace "${entry.namespace}" 与同名顶层 alias 冲突`);
-    }
-    exportTargets.set(target, entry);
-    if (entry.namespace === null) flatEntries.push(entry);
-    else {
-      const entries = byNamespace.get(entry.namespace) ?? [];
-      entries.push(entry);
-      byNamespace.set(entry.namespace, entries);
-    }
-  };
-
-  for (const schema of collected) {
-    const explicit = explicitAliases.get(`${schema.svc}\u0000${schema.full}`);
-    const automaticAlias = shortAlias(schema.full);
-    const alias = explicit?.exportAs ?? (automaticAlias ? safeAlias(automaticAlias) : "");
-    if (!alias) continue;
-    addExport({
-      namespace: explicit?.namespace ?? matchNamespace(schema.svc, schema.full),
-      alias,
-      full: schema.full,
-      svc: schema.svc,
-    });
-  }
-
-  // 每个 service 的 components 都是 canonical schema 来源，不跨 service 合并。
-  for (const svc of serviceNames) {
-    lines.push(`import type { components as ${cap(svc)}Components } from "./types/${svc}.js";`);
-  }
-  lines.push("");
-
-  lines.push("export interface SchemasByService {");
-  for (const svc of serviceNames) {
-    lines.push(`  ${JSON.stringify(svc)}: ${cap(svc)}Components["schemas"];`);
-  }
-  lines.push("}");
-  lines.push("");
-  lines.push("export type ServiceName = keyof SchemasByService;");
-  lines.push("export type SchemaOf<");
-  lines.push("  Service extends ServiceName,");
-  lines.push("  Name extends keyof SchemasByService[Service],");
-  lines.push("> = SchemasByService[Service][Name];");
-  lines.push("");
-
-  if (serviceNames.length === 1) {
-    lines.push(`export type AllSchemas = ${cap(serviceNames[0]!)}Components["schemas"];`);
-    lines.push("");
-  } else if (compatibility?.legacyAllSchemas === true) {
-    const schemaOwners = new Map<string, string>();
-    for (const schema of collected) {
-      const previousService = schemaOwners.get(schema.full);
-      if (previousService) {
-        throw new Error(
-          `[genapi] compatibility.legacyAllSchemas 无法安全生成：schema "${schema.full}" 同时存在于 ${previousService} 和 ${schema.svc}`,
-        );
-      }
-      schemaOwners.set(schema.full, schema.svc);
-    }
-    lines.push("/** @deprecated 多 service 请改用 SchemasByService / SchemaOf。 */");
-    lines.push(
-      `export type AllSchemas = UnionToIntersection<${serviceNames
-        .map((service) => `${cap(service)}Components["schemas"]`)
-        .join(" | ")}>;`,
-    );
-    lines.push("type UnionToIntersection<U> =");
-    lines.push("  (U extends unknown ? (value: U) => void : never) extends");
-    lines.push("    (value: infer Intersection) => void");
-    lines.push("    ? Intersection");
-    lines.push("    : never;");
-    lines.push("");
-  }
-
-  // ---- namespace 分组输出 ----
-  // 按 namespace 名排序，保证生成稳定
-  const sortedNamespaces = [...byNamespace.keys()].sort();
-  for (const ns of sortedNamespaces) {
-    const entries = byNamespace.get(ns)!;
-    lines.push(`/** namespace ${ns}（${entries.length} 个 schema）*/`);
-    lines.push(`export namespace ${ns} {`);
-    // 按 alias 排序，保证生成稳定
-    entries.sort((a, b) => lexicalCompare(a.alias, b.alias));
-    for (const e of entries) {
-      lines.push(`  /** ${e.full}（原 service: ${e.svc}）*/`);
-      lines.push(
-        `  export type ${e.alias} = SchemaOf<${JSON.stringify(e.svc)}, ${JSON.stringify(e.full)}>;`,
-      );
-    }
-    lines.push("}");
-    lines.push("");
-  }
-
-  // ---- 全局 alias 输出 ----
-  // 按 alias 排序，保证生成稳定
-  flatEntries.sort((a, b) => lexicalCompare(a.alias, b.alias));
-  for (const e of flatEntries) {
-    lines.push(`/** ${e.full}（原 service: ${e.svc}）*/`);
-    lines.push(
-      `export type ${e.alias} = SchemaOf<${JSON.stringify(e.svc)}, ${JSON.stringify(e.full)}>;`,
-    );
-  }
-  if (flatEntries.length > 0) lines.push("");
-
-  return lines.join("\n");
-}
-
 // ---------- swagger-fetch re-export ----------
 //
-// 原独立 swagger-fetch 能力合入 genapi，避免类型双份维护。
-// 业务侧从 "@xapiforge/genapi" 统一 import buildUrl / fetchSwaggerJson / formatBytes / 类型。
-export { buildUrl, downloadJson, fetchSwaggerJson, formatBytes } from "./swagger-fetch.js";
+// 远程 source.url 的下载能力随 genapi 一起发布；source.file 由生成器直接读取。
+export { downloadJson, fetchSwaggerJson, formatBytes } from "./swagger-fetch.js";
 export type { FetchOptions, FetchResult } from "./swagger-fetch.js";

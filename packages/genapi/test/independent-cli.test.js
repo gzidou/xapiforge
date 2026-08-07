@@ -37,18 +37,16 @@ test("CLI generates types without consumer-level dependency binaries", async () 
       join(consumerDir, "xapiforge.config.ts"),
       `import { createRuntimeEnumHooks, defineConfig } from "@xapiforge/genapi";
       export default defineConfig({
-        defaultPath: "/swagger/v1/swagger.json",
         timeoutMs: 15000,
         outputDir: "swagger",
         mode: "offline",
         projects: [{
           name: "demo",
           displayName: "Independent Consumer",
-          baseHost: "http://localhost:8787",
           services: [{
             name: "base",
             displayName: "Base API",
-            port: 8787,
+            source: { file: "swagger/demo/base.json" },
             hooks: createRuntimeEnumHooks()
           }]
         }]

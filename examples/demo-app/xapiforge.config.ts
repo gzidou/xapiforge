@@ -1,7 +1,7 @@
 /**
  * Demo project swagger config.
  *
- * Run `pnpm download-swagger` (offline mode = no-op, snapshot included).
+ * Run `pnpm download-swagger` (offline mode validates the local source files).
  * Run `pnpm generate:api demo` to generate TS API client into src/api/gen/demo/.
  */
 
@@ -9,29 +9,31 @@ import { createRuntimeEnumHooks, defineConfig } from "@xapiforge/genapi";
 import { legacyEnumHooks } from "./hooks/legacy-enum.js";
 
 export default defineConfig({
-  defaultPath: "/swagger/v1/swagger.json",
   timeoutMs: 15_000,
   outputDir: "swagger",
   genOutputDir: "src/api/gen",
-  // offline: skip download, swagger/demo/*.json already included in repo
+  // offline: source.file is validated and read directly; no network access.
   mode: "offline",
   projects: [
     {
       name: "demo",
       displayName: "Demo Service",
-      baseHost: "http://localhost:8787",
       services: [
-        { name: "base", displayName: "Base API", port: 8787 },
+        {
+          name: "base",
+          displayName: "Base API",
+          source: { file: "swagger/demo/base.json" },
+        },
         {
           name: "infrastructure",
           displayName: "Infrastructure API",
-          port: 8787,
+          source: { file: "swagger/demo/infrastructure.json" },
           hooks: createRuntimeEnumHooks(),
         },
         {
           name: "legacy",
           displayName: "Legacy API fixture",
-          port: 8787,
+          source: { file: "swagger/demo/legacy.json" },
           hooks: legacyEnumHooks,
         },
       ],
