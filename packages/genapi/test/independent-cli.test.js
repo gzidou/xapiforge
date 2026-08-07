@@ -35,7 +35,7 @@ test("CLI generates types without consumer-level dependency binaries", async () 
     );
     await writeFile(
       join(consumerDir, "xapiforge.config.ts"),
-      `import { defineConfig } from "@xapiforge/genapi";
+      `import { createRuntimeEnumHooks, defineConfig } from "@xapiforge/genapi";
       export default defineConfig({
         defaultPath: "/swagger/v1/swagger.json",
         timeoutMs: 15000,
@@ -45,7 +45,12 @@ test("CLI generates types without consumer-level dependency binaries", async () 
           name: "demo",
           displayName: "Independent Consumer",
           baseHost: "http://localhost:8787",
-          services: [{ name: "base", displayName: "Base API", port: 8787 }]
+          services: [{
+            name: "base",
+            displayName: "Base API",
+            port: 8787,
+            hooks: createRuntimeEnumHooks()
+          }]
         }]
       });`,
       "utf8",
@@ -66,12 +71,25 @@ test("CLI generates types without consumer-level dependency binaries", async () 
                       schema: {
                         type: "object",
                         required: ["ok"],
-                        properties: { ok: { type: "boolean" } },
+                        properties: {
+                          ok: { type: "boolean" },
+                          state: { $ref: "#/components/schemas/RuntimeState" },
+                        },
                       },
                     },
                   },
                 },
               },
+            },
+          },
+        },
+        components: {
+          schemas: {
+            RuntimeState: {
+              type: "integer",
+              enum: [0, 1],
+              "x-enum-varnames": ["Offline", "Online"],
+              "x-enum-labels": ["Offline", "Online"],
             },
           },
         },
@@ -100,6 +118,7 @@ test("CLI generates types without consumer-level dependency binaries", async () 
     );
     assert.match(generated, /"\/api\/ping"/);
     assert.match(generated, /ok: boolean/);
+    assert.match(generated, /export const RuntimeState = \{/);
 
     const stableCheck = spawnSync(
       process.execPath,

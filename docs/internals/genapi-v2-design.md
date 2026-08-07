@@ -1283,56 +1283,56 @@ examples/demo-app/swagger/
 
 ### 配置
 
-- [ ] project/service ID 有明确格式和运行时校验。
-- [ ] 重复 ID 和生成标识符冲突会失败。
-- [ ] namespace 和 alias 配置属于 project，可限定 service。
-- [ ] hooks 支持 service > project > root 的整体覆盖，并保留 `{}` 禁用语义。
-- [ ] Swagger source 与运行时 baseURL 在文档和类型中明确分离。
+- [x] project/service ID 有明确格式和运行时校验。
+- [x] 重复 ID 和生成标识符冲突会失败。
+- [x] namespace 和 alias 配置属于 project，可限定 service。
+- [x] hooks 支持 service > project > root 的整体覆盖，并保留 `{}` 禁用语义。
+- [x] Swagger source 与运行时 baseURL 在文档和类型中明确分离。
 
 ### 生成正确性
 
-- [ ] 每个 service 保持独立 `paths` 和 `components`。
-- [ ] 多服务 schema 不再通过 `AllSchemas` 隐式交叉合并。
-- [ ] `SchemasByService` 和 `SchemaOf` 可用。
-- [ ] namespace alias 冲突不会静默跳过。
-- [ ] types、api-types、enum 和统计都基于同一份规范化文档。
+- [x] 每个 service 保持独立 `paths` 和 `components`。
+- [x] 多服务 schema 不再通过 `AllSchemas` 隐式交叉合并。
+- [x] `SchemasByService` 和 `SchemaOf` 可用。
+- [x] namespace alias 冲突不会静默跳过。
+- [x] types、api-types、enum 和统计都基于同一份规范化文档。
 
 ### 稳定性
 
-- [ ] 相同输入生成结果字节一致。
-- [ ] 生成文件不包含当前时间。
-- [ ] 生成核心依赖精确锁定。
-- [ ] 生成在 staging 中完成并原子替换。
-- [ ] 失败时旧产物保持不变。
-- [ ] CLI `all` 在全部目标 staging 成功前不修改正式目录，并能恢复中断的提交状态。
-- [ ] 删除 service 后没有 stale 文件。
-- [ ] `--check` 可以用于 CI。
-- [ ] 未知或不完整 CLI 参数会失败。
+- [x] 相同输入生成结果字节一致。
+- [x] 生成文件不包含当前时间。
+- [x] 生成核心依赖精确锁定。
+- [x] 生成在 staging 中完成并原子替换。
+- [x] 失败时旧产物保持不变。
+- [x] CLI `all` 在全部目标 staging 成功前不修改正式目录，并能恢复中断的提交状态。
+- [x] 删除 service 后没有 stale 文件。
+- [x] `--check` 可以用于 CI。
+- [x] 未知或不完整 CLI 参数会失败。
 
 ### 多服务
 
-- [ ] 同一网关多个 service 可共享 defaults。
-- [ ] service 可以覆盖运行时 baseURL。
-- [ ] 不同 project 可以使用独立 auth、middleware 和地址。
-- [ ] 同名不同结构 schema 有明确、无歧义的访问方式。
-- [ ] Core `NetConfig` 能力不会在生成 client 中丢失。
+- [x] 同一网关多个 service 可共享 defaults。
+- [x] service 可以覆盖运行时 baseURL。
+- [x] 不同 project 可以使用独立 auth、middleware 和地址。
+- [x] 同名不同结构 schema 有明确、无歧义的访问方式。
+- [x] Core `NetConfig` 能力不会在生成 client 中丢失。
 
 ### 枚举和 hooks
 
-- [ ] 标准字符串和数字 enum 类型正确。
-- [ ] 可选 runtime enum 和 label 可用。
-- [ ] legacy enum 示例 hook 可运行。
-- [ ] Flags enum 有明确类型和文档。
-- [ ] hook 重命名、增加、删除 schema 后导出保持一致。
+- [x] 标准字符串和数字 enum 类型正确。
+- [x] 可选 runtime enum 和 label 可用。
+- [x] legacy enum 示例 hook 可运行。
+- [x] Flags enum 有明确类型和文档。
+- [x] hook 重命名、增加、删除 schema 后导出保持一致。
 
 ### 测试和文档
 
-- [ ] 标准、多服务、legacy fixture 分开维护。
-- [ ] fixture 不包含真实组织、服务、地址或业务数据。
-- [ ] genapi 单元、集成、消费者编译和 runtime URL 测试完成。
-- [ ] 主接入文档说明 project/service 的选择规则。
-- [ ] 维护文档说明生成、检查、升级依赖和发布步骤。
-- [ ] CHANGELOG 记录兼容项、新增项和弃用项。
+- [x] 标准、多服务、legacy fixture 分开维护。
+- [x] fixture 不包含真实组织、服务、地址或业务数据。
+- [x] genapi 单元、集成、消费者编译和 runtime URL 测试完成。
+- [x] 主接入文档说明 project/service 的选择规则。
+- [x] 维护文档说明生成、检查、升级依赖和发布步骤。
+- [x] CHANGELOG 记录兼容项、新增项和弃用项。
 
 只有以上检查完成并通过 `pnpm verify`，genapi v2 才进入发布候选阶段。
 
@@ -1355,14 +1355,14 @@ examples/demo-app/swagger/
 13. v2 第一阶段拒绝远程 `$ref`；需要远程引用时先设计锁定、缓存和离线校验合同。
 14. 未知 CLI 参数必须失败，不能继续静默忽略。
 
-## 18. 开发开始前仍需确认的事项
+## 18. 发布阶段决策
 
-以下问题不阻塞 V2-01，但必须在对应阶段开始前确定：
+V2-04 至 V2-06 已把开发前问题收敛为以下发布策略：
 
-1. npm 发布版本使用 `0.2.0`、`1.0.0` 还是其它版本号。
-2. 多 service 的旧 `AllSchemas` 在哪个版本完全移除。
-3. service override 第一阶段是否允许覆盖 `authService`，还是只开放 `baseURL`、middleware、fetch 和重试配置。
-4. manifest 是否作为默认提交文件，还是只用于 `--check` 内部比较。
-5. 遗留 `legacyAllSchemas` 兼容开关默认关闭后，需要保留到哪个发布版本。
+1. genapi v2 的候选 npm 版本是 `0.2.0`。实际版本号修改仍放在独立 release commit，由维护者在正式发布授权后执行；manifest 的 `formatVersion: 2` 不依赖 npm 版本号。
+2. 多 service 默认从 `0.2.0` 起不生成 `AllSchemas`。`compatibility.legacyAllSchemas` 只在 `0.2.x` 提供迁移窗口，最早在 `0.3.0` 移除，移除前必须再次写入 CHANGELOG。
+3. service override 第一阶段允许覆盖 `authService`、`baseURL`、middleware、fetch、超时、重试和 logger；`validateStatus` 与 `resolveErrorMessage` 仍保持 project defaults 级。认证生命周期完全不同的服务仍建议拆 project。
+4. `manifest.json` 是每次生成的默认产物，参与确定性比较。是否提交生成目录由消费团队决定；只要提交生成产物，manifest 必须一起提交。
+5. legacy 兼容开关默认关闭，发现跨 service 重复 full schema name 时无条件失败，不能用兼容开关恢复错误 intersection。
 
-这些决策应写入本文并附带测试，不通过口头约定长期保留。
+上述行为都有生成器或消费者回归；发布命令和版本提交不属于本设计阶段的隐式授权。

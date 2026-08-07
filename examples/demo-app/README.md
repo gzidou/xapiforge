@@ -11,8 +11,11 @@ Vue 3 全链路接入示例 — **模拟接入 Demo 项目**。
 
 在一个示例业务项目（Demo Service）里跑通 `@xapiforge/core` 全套：
 
-- `xapiforge.config.ts` 配置 → `xapiforge-fetch` 下载 swagger.json
+- `xapiforge.config.ts` 配置三个隔离 service → `xapiforge-fetch` 下载或复用 swagger.json
 - `genapi` 生成 TS API 客户端
+- `SchemasByService` / `SchemaOf` 多服务类型隔离
+- `defaults/services` 运行时地址覆盖
+- 标准 runtime enum helper 与 service 级 legacy enum hook
 - `HttpClient` + `AuthService` + `createNet` 初始化
 - `AuthApi` 调 `/connect/token`（OAuth2 password grant）
 - 业务 middleware（ABP envelope 解包）
@@ -21,10 +24,12 @@ Vue 3 全链路接入示例 — **模拟接入 Demo 项目**。
 
 ## Demo 后端特点
 
-Demo 后端是 ABP 框架：
+运行时 mock 包含一组 envelope/OAuth2 场景；Swagger fixture 全部是仓库内合成数据：
 
 - 标准 OAuth2 password grant + `Infrastructure_Web` client_id + 多租户
-- swagger 里包含多组 service 与 endpoints
+- `base.json`：主 API 和通用请求场景
+- `infrastructure.json`：独立 service、标准 enum 和独立运行时地址示例
+- `legacy.json`：只由 service hook 规范化的历史 enum 示例
 - `/connect/token` 不在 swagger paths 里（OpenAPI 标准 —— security scheme 描述，不算 path endpoint）
 - 响应格式：`{ code: 0, data: ..., message: null }`（ABP envelope）
 - 错误响应：OAuth2 标准 `{ error, error_description }`（不是 `{code, data, message}`）
@@ -34,8 +39,10 @@ Demo 后端是 ABP 框架：
 ```
 examples/demo-app/
 ├── package.json          # @xapiforge/core + adapter + genapi 依赖
-├── xapiforge.config.ts     # Demo project config (1 service)
-├── swagger/demo/*.json    # swagger 快照（预拷贝，离线用）
+├── xapiforge.config.ts     # Demo project config (3 services)
+├── hooks/
+│   └── legacy-enum.ts     # 可复制的保守 legacy enum 规范化示例
+├── swagger/demo/*.json    # 分离的标准/多服务/legacy 合成快照
 ├── tsconfig.json         # extends ../../tsconfig.base.json
 ├── vite.config.ts
 └── src/
@@ -62,6 +69,16 @@ pnpm dev   # 需 vue / vite（项目内不装，开发者自己装）
 ```
 
 > 配合 mock-server 跑：根目录 `pnpm mock` 启动本地 mock（模拟 Demo 后端）。
+
+生成并检查：
+
+```bash
+pnpm generate:api
+pnpm run generate:api -- --check
+pnpm typecheck
+```
+
+Home 页的主业务请求走 `api.base`，配置查询走 `api.infrastructure`。`main.ts` 使用 `services.infrastructure.baseURL` 演示 service 级运行时地址覆盖；mock 环境两个地址相同，部署时可以独立注入。
 
 ## ABP 接入的 4 个陷阱
 

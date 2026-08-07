@@ -1,0 +1,51 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Demo Infrastructure API",
+    "description": "Synthetic multi-service fixture for xapiforge examples.",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/api/infrastructure/appManagement": {
+      "get": {
+        "tags": ["infrastructure"],
+        "summary": "Get app management config",
+        "parameters": [
+          { "name": "module", "in": "query", "schema": { "type": "string" } },
+          { "name": "enabled", "in": "query", "schema": { "type": "boolean" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Config",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AppManagementDto" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AppManagementDto": {
+        "type": "object",
+        "properties": {
+          "version": { "type": "string" },
+          "modules": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "state": { "$ref": "#/components/schemas/Infrastructure.DeviceState" }
+        }
+      },
+      "Infrastructure.DeviceState": {
+        "type": "integer",
+        "enum": [0, 1],
+        "x-enum-varnames": ["Offline", "Online"],
+        "x-enum-labels": ["Offline", "Online"]
+      }
+    }
+  }
+}

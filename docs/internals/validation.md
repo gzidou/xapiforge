@@ -15,6 +15,22 @@
 
 **改代码后回归顺序**：L1 → （改了 demo-app 业务代码时）L2。
 
+## genapi v2 验证
+
+修改生成器、配置、fixture 或生成客户端模板时，先运行：
+
+```bash
+pnpm --filter '@xapiforge/genapi' test
+pnpm --filter '@xapiforge/example-demo-app' typecheck
+cd examples/demo-app
+pnpm download-swagger
+pnpm run generate:api -- --check
+```
+
+genapi 测试覆盖配置校验、规范化文档复用、多服务 schema 隔离、分层运行时 URL、runtime enum/Flags、legacy hook、确定性 manifest、只读 check、事务恢复、stale 文件清理和独立 CLI 消费者。
+
+`--check` 通过时输出 `UNCHANGED`；运行后不应出现 `.xapiforge-lock`、staging、backup 或事务状态残留。发布前还要执行根目录 `pnpm publish:dry-run`，检查真实 tarball。
+
 ---
 
 ## L1：库层自动验证（首选，必跑）

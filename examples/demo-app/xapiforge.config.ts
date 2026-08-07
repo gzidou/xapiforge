@@ -5,7 +5,8 @@
  * Run `pnpm generate:api demo` to generate TS API client into src/api/gen/demo/.
  */
 
-import { defineConfig } from "@xapiforge/genapi";
+import { createRuntimeEnumHooks, defineConfig } from "@xapiforge/genapi";
+import { legacyEnumHooks } from "./hooks/legacy-enum.js";
 
 export default defineConfig({
   defaultPath: "/swagger/v1/swagger.json",
@@ -19,7 +20,21 @@ export default defineConfig({
       name: "demo",
       displayName: "Demo Service",
       baseHost: "http://localhost:8787",
-      services: [{ name: "base", displayName: "Base API", port: 8787 }],
+      services: [
+        { name: "base", displayName: "Base API", port: 8787 },
+        {
+          name: "infrastructure",
+          displayName: "Infrastructure API",
+          port: 8787,
+          hooks: createRuntimeEnumHooks(),
+        },
+        {
+          name: "legacy",
+          displayName: "Legacy API fixture",
+          port: 8787,
+          hooks: legacyEnumHooks,
+        },
+      ],
     },
   ],
 });

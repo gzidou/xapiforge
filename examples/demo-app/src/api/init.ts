@@ -19,26 +19,15 @@
  */
 
 import { createNet, HttpClient } from "@xapiforge/core";
-import type { AuthService, Middleware, FetchLike } from "@xapiforge/core";
-import type { ApiDemo } from "./gen/demo/index.js";
+import type { NetConfig } from "@xapiforge/core";
+import type { ApiDemo, ApiDemoLayeredClientConfig } from "./gen/demo/index.js";
 import { createDemoClient } from "./gen/demo/index.js";
 
 export type { ApiDemo };
 
-export interface InitApiConfig {
-  baseURL: string;
-  authService: AuthService;
-  /** 业务 middleware（envelope 解包等），内核 middleware（auth + httpError）由 createNet 自动注入 */
-  middleware?: Middleware[];
-  /** retry loop 最大重试次数，默认 1 */
-  maxRetries?: number;
-  /**
-   * 自定义 fetch 实现（默认 globalThis.fetch）。
-   *
-   * 用于运行时切换：Capacitor 注入 capacitorFetch 走原生 HTTP。
-   * 详见 docs/LAYERED-ARCHITECTURE.md 第 3 节「fetch 注入链路」。
-   */
-  fetch?: FetchLike;
+export interface InitApiConfig extends NetConfig {
+  /** 生成 client 的 service 级覆盖；未定义字段继续使用当前 NetConfig defaults。 */
+  services?: ApiDemoLayeredClientConfig["services"];
 }
 
 /**
@@ -297,14 +286,10 @@ export function initApi(name: string, config: InitApiConfig): void {
     throw new Error(`[useApi] initApi('${name}') called more than once`);
   }
 
-  // 创建 Demo 强类型 client（createNet 封装 openapi-fetch + middleware + retry）
-  const demoClient = createDemoClient({
-    baseURL: config.baseURL,
-    authService: config.authService,
-    middleware: config.middleware,
-    maxRetries: config.maxRetries,
-    fetch: config.fetch,
-  });
+  const { services, ...defaults } = config;
+
+  // 创建 Demo 强类型 client；service override 只替换显式定义的 Core 配置字段。
+  const demoClient = createDemoClient({ defaults, services });
 
   // HttpClient 给文件下载 / AuthApi refresh 用（纯 HTTP，无内核）
   //   fetch 透传：业务侧传 capacitorFetch 时，文件下载也走原生 HTTP
@@ -315,11 +300,8 @@ export function initApi(name: string, config: InitApiConfig): void {
   //   - 业务 middleware（abpUnwrap 等）不注入                  ← 不受主协议干扰
   //   用于"不标准接口"：格式与主协议不同的接口（微信 / 自研 / 老接口）
   const rawClient = createNet<Record<string, never>>({
-    baseURL: config.baseURL,
-    authService: config.authService,
+    ...defaults,
     middleware: [], // 无业务 middleware，纯内核
-    maxRetries: config.maxRetries,
-    fetch: config.fetch,
   });
 
   // request：走 rawClient（内核 + 自定义 unwrap）

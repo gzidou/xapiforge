@@ -231,7 +231,7 @@ async function queryComplex() {
   await safeCall(
     "GET /api/infrastructure/appManagement（复杂 query）",
     () =>
-      api.base.GET("/api/infrastructure/appManagement", {
+      api.infrastructure.GET("/api/infrastructure/appManagement", {
         params: {
           query: {
             module: complexQuery.module || undefined,

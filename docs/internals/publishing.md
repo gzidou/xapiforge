@@ -69,6 +69,8 @@ pnpm publish:dry-run
 
 dry-run 输出的包中应有 `dist/*.js`、`dist/*.d.ts` 和包 README，不应有 source map、源码、测试、内部配置或凭据。
 
+涉及 genapi 时还应确认 `dist/runtime-enum.js`、对应 `.d.ts` 和两个 CLI 都在包中，并让独立临时消费者从打包结果执行一次 `xapiforge-fetch`、`xapiforge <project>`、`--check` 和 TypeScript 编译。仓库的 `packages/genapi/test/independent-cli.test.js` 是最低自动回归，不替代真实 tarball 清单检查。
+
 ### 关于 source map、注释和“混淆”
 
 xapiforge 是开源库，npm 包中的 JavaScript 不做混淆。混淆无法阻止源码被阅读，反而会让报错堆栈和问题定位变得困难。发布产物采用下面的约定：

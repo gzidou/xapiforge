@@ -80,6 +80,8 @@ export default withMermaid(
               { text: "vConsole 业务调试面板", link: "/guides/vconsole-debug" },
               { text: "枚举类型生成方案", link: "/guides/enums" },
               { text: "genapi Hooks 设计", link: "/guides/genapi-hooks" },
+              { text: "genapi v2 多服务接入", link: "/guides/genapi-v2" },
+              { text: "genapi v2 迁移", link: "/guides/genapi-v2-migration" },
             ],
           },
         ],

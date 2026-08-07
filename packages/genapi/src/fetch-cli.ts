@@ -25,6 +25,7 @@ import {
   type ProjectConfig,
   type XApiForgeConfig,
 } from "./swagger-fetch.js";
+import { configApiPlugin } from "./config-api-plugin.js";
 import { writeFile, mkdir, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -43,6 +44,7 @@ async function loadConfig(cwd: string): Promise<XApiForgeConfig> {
       entryPoints: [tsPath],
       bundle: true,
       packages: "external",
+      plugins: [configApiPlugin],
       format: "esm",
       platform: "node",
       write: false,

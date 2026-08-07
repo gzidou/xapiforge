@@ -102,11 +102,18 @@ pnpm generate:api myapp
 src/api/gen/myapp/
 ├── index.ts
 ├── api-types.ts
+├── manifest.json
 └── types/
     └── base.ts
 ```
 
 `index.ts` 会导出 `createMyappClient`。生成目录可以加入 Git，也可以在 CI 或构建前重新生成；团队应选择一种方式并保持一致。
+
+提交生成产物的团队应在 CI 增加只读漂移检查：
+
+```bash
+pnpm run generate:api -- --check
+```
 
 ### 4. 初始化客户端
 
@@ -169,6 +176,8 @@ onMounted(async () => {
 到这里，最小接入已经完成。
 
 `GET` 在 HTTP 或网络失败时会抛出 `ApiError` / `NetworkError`，生产页面应在加载状态之外补上 `try/catch`、用户可读提示和重试入口，详见[错误处理](../guides/error-handling.md)。
+
+同一应用接入多个 service、配置独立运行时地址或处理同名 schema 时，继续阅读 [genapi v2 多服务接入](../guides/genapi-v2.md)。从旧生成契约升级时使用 [v2 迁移清单](../guides/genapi-v2-migration.md)。
 
 ## 生产环境增强
 

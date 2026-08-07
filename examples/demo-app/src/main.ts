@@ -33,6 +33,9 @@ import { initApi, useApi } from "./api/index.js";
 // Demo 后端基础 URL（真后端在private network localhost:8787；本地开发用 mock 服务顶替）
 const BASE_URL = "http://localhost:8787";
 
+// 多 service 可在部署时独立配置；mock 环境仍指向同一进程。
+const INFRASTRUCTURE_BASE_URL = "http://localhost:8787";
+
 // 第三方 API（mock 顶替，演示独立 client 配置）
 const THIRD_PARTY_BASE_URL = "http://localhost:8787/api/3rd";
 
@@ -121,6 +124,11 @@ initApi("default", {
   // onResponse 反序执行：abpUnwrap 先看 response（跳过非 2xx）→ httpError 处理 5xx → auth 处理 401
   middleware: [createAbpUnwrapMw()],
   maxRetries: 3,
+  services: {
+    infrastructure: {
+      baseURL: INFRASTRUCTURE_BASE_URL,
+    },
+  },
 });
 
 initApi("weather", {

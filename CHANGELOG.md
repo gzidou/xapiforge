@@ -4,6 +4,13 @@ All notable changes to xapiforge are documented here.
 
 ## Unreleased
 
+- Added the genapi v2 contract: validated project/service IDs, project-scoped aliases and namespaces, service-isolated `SchemasByService`/`SchemaOf`, and strict collision diagnostics.
+- Added deterministic manifests, read-only `--check`, generation locking, transactional project replacement, stale-file cleanup, and interrupted-transaction recovery.
+- Added layered generated-client configuration with `service override > defaults`, while keeping the legacy flat `NetConfig` initialization compatible.
+- Added opt-in standard runtime enum maps, explicit Flags handling, metadata validation, and a runnable legacy enum service hook; framework-specific normalization remains outside the generator default path.
+- Changed multi-service projects to stop generating the unsafe `AllSchemas` intersection by default. Temporary `compatibility.legacyAllSchemas` output is deprecated and only allowed when full schema names are globally unique.
+- Changed hook resolution to the documented whole-object precedence `service > project > root`; explicit `{}` disables inherited hooks.
+- Added separate base, infrastructure, standard-enum, and legacy demo/test fixtures plus independent CLI coverage for config-side helper imports.
 - Changed the genapi default output directory from `src/api` to `src/api/gen`; explicit `genOutputDir` and `--outputDir` overrides remain supported.
 - Fixed workspace config loading so the demo can use `defineConfig` without resolving the package's TypeScript source at CLI runtime.
 - Made demo download, generation, development, type checking, and production builds prepare genapi and regenerate the ignored offline API client automatically.

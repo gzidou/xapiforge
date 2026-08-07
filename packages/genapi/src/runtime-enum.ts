@@ -313,9 +313,7 @@ export function createRuntimeEnumHooks(options: RuntimeEnumHooksOptions = {}): G
       const definitions = collectDefinitions(ctx.normalizedDocument, metadata, ctx);
       if (definitions.length === 0) return Promise.resolve(typesContent);
       const prefix = typesContent.endsWith("\n") ? typesContent : `${typesContent}\n`;
-      return Promise.resolve(
-        `${prefix}\n${definitions.map(renderDefinition).join("\n\n")}\n`,
-      );
+      return Promise.resolve(`${prefix}\n${definitions.map(renderDefinition).join("\n\n")}\n`);
     },
   };
 }

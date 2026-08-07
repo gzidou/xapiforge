@@ -52,6 +52,34 @@ pnpm verify
 
 完整范围和期望结果见[验证指南](./validation.md)。
 
+## 维护 genapi fixture 和生成契约
+
+demo 的 fixture 按职责分开：
+
+```text
+examples/demo-app/swagger/demo/
+├── base.json
+├── infrastructure.json
+└── legacy.json
+```
+
+- 标准、多服务 fixture 使用规范 OpenAPI，不写业务框架特例。
+- legacy fixture 只通过 `examples/demo-app/hooks/legacy-enum.ts` 规范化。
+- fixture 必须是脱敏、合成数据，不包含真实组织、内网地址或业务数据。
+
+修改配置、Swagger、模板或生成器后：
+
+```bash
+pnpm --filter '@xapiforge/genapi' test
+pnpm --filter '@xapiforge/example-demo-app' typecheck
+cd examples/demo-app
+pnpm run generate:api -- --check
+```
+
+生成器先准备完整 project，再通过锁、staging、backup 和事务状态替换正式目录。不要手工删除这些内部文件来“修好”一次失败；重新运行生成器会先执行恢复。如果恢复仍失败，保留目录和报错再排查。
+
+升级 `openapi-typescript`、TypeScript 或 esbuild 时使用精确版本，单独提交依赖和锁文件更新，检查所有 fixture 生成 diff，并运行独立 CLI 消费者测试。多服务契约和迁移规则见 [genapi v2](../guides/genapi-v2.md)。
+
 ## 发布一个新版本
 
 发布不是“运行一次 npm publish”。维护者需要依次完成版本号、CHANGELOG、验证、试装、正式发布和 Git tag。

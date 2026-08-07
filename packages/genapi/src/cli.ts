@@ -20,24 +20,11 @@
  */
 
 import { generateMany, validateConfig, type XApiForgeConfig } from "./index.js";
+import { configApiPlugin } from "./config-api-plugin.js";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { build, type Plugin } from "esbuild";
-
-const configApiPlugin: Plugin = {
-  name: "xapiforge-config-api",
-  setup(buildContext) {
-    buildContext.onResolve({ filter: /^@xapiforge\/genapi$/ }, () => ({
-      path: "config-api",
-      namespace: "xapiforge",
-    }));
-    buildContext.onLoad({ filter: /.*/, namespace: "xapiforge" }, () => ({
-      contents: "export const defineConfig = (config) => config;",
-      loader: "js",
-    }));
-  },
-};
+import { build } from "esbuild";
 
 /**
  * 加载业务项目的 xapiforge.config。

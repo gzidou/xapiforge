@@ -1,0 +1,46 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Demo Legacy API",
+    "description": "Synthetic legacy enum fixture; normalized only by the demo service hook.",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/api/legacy/device": {
+      "get": {
+        "tags": ["legacy"],
+        "summary": "Get legacy device",
+        "responses": {
+          "200": {
+            "description": "Device",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Fixture.LegacyDevice" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Fixture.LegacyDevice": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "state": { "$ref": "#/components/schemas/Fixture.LegacyState" },
+          "permissions": { "$ref": "#/components/schemas/Fixture.LegacyPermissions" }
+        }
+      },
+      "Fixture.LegacyState": {
+        "type": "integer",
+        "enum": ["Offline(Offline device)=0", "Online(Online device)=1"]
+      },
+      "Fixture.LegacyPermissions": {
+        "type": "integer",
+        "enum": ["Read(Read access)=1", "Write(Write access)=2", "Execute(Execute access)=4"]
+      }
+    }
+  }
+}

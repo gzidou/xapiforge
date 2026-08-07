@@ -12,8 +12,7 @@
  *     method/path/pathParam/query/body 全强类型（拼错立刻报）
  *   - 按 service 拆 client 而非合并 paths —— ABP swagger 把公共 endpoint 复制到每个 service，
  *     合并 `paths & paths` 会触发 TS2300 "Named property not identical"
- *   - schema 别名按 `Volo.Abp.Identity.IdentityUserDto` 末段名 `IdentityUserDto`，
- *     冲突时用倒数两级 `Identity_IdentityUserDto`。业务侧 import `IdentityUserDto` 即用
+ *   - schema identity 包含 service + full name；短 alias 冲突直接失败并要求显式配置
  *
  * 用法：
  *   import { generate } from "@xapiforge/genapi";
@@ -1407,10 +1406,9 @@ function renderIndex(
  * 生成 api-types.ts —— 按 components.schemas 导 schema alias
  *
  * 命名策略：
- *   - `Volo.Abp.Identity.IdentityUserDto` → `IdentityUserDto`（取最后一段）
- *   - 短名冲突（如 `base.Account.AccountDto` 和 `monitor.Account.AccountDto` 都出 `AccountDto`）→
- *     `Identity_IdentityUserDto`（末二级，避免碰撞）
- *   - 同 service + 同 full 名重复出现 → 只导一次
+ *   - 默认取 full schema name 最后一段作为便利 alias
+ *   - alias 或 namespace 冲突直接失败，不按 service 顺序静默跳过或自动改名
+ *   - `typeExports.aliases` 可给指定 service/full schema 配置稳定公开名
  *
  * 业务侧：
  *   import type { IdentityUserDto, IdentityUserCreateDto } from "@/api/gen/demo/api-types";
@@ -1525,7 +1523,8 @@ function renderApiTypes(
         `[genapi] schema alias 冲突：${qualified}\n` +
           `  - ${previous.svc}/${previous.full}\n` +
           `  - ${entry.svc}/${entry.full}\n` +
-          "请在 projects[].typeExports.aliases 中为至少一个 schema 配置唯一 exportAs。",
+          "请在 projects[].typeExports.aliases 中为至少一个 schema 配置唯一 exportAs，例如：\n" +
+          `  { service: ${JSON.stringify(entry.svc)}, schema: ${JSON.stringify(entry.full)}, exportAs: ${JSON.stringify(`${cap(entry.svc)}${entry.alias}`)} }`,
       );
     }
     if (entry.namespace === null && byNamespace.has(entry.alias)) {

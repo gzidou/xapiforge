@@ -523,6 +523,10 @@ test("schema alias collisions fail with both identities and explicit aliases res
         assert.match(error.message, /schema alias 冲突：UserDto/);
         assert.match(error.message, /identity\/Shared\.UserDto/);
         assert.match(error.message, /infrastructure\/Shared\.UserDto/);
+        assert.match(
+          error.message,
+          /\{ service: "infrastructure", schema: "Shared\.UserDto", exportAs: "InfrastructureUserDto" \}/,
+        );
         return true;
       },
     );
