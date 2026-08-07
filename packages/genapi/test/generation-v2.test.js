@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { generate, generateMany, validateConfig } from "../dist/index.js";
+
+const packageDir = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
+const tscPath = join(packageDir, "node_modules", "typescript", "bin", "tsc");
 
 function service(name, extra = {}) {
   return {
@@ -252,6 +257,171 @@ test("external references fail before writing generated output", async () => {
       /暂不支持外部 \$ref/,
     );
     assert.equal(existsSync(join(root, "generated")), false);
+  });
+});
+
+test("multi-service schemas stay isolated through SchemasByService and SchemaOf", async () => {
+  await withTempProject(async (root) => {
+    await writeSwagger(
+      root,
+      "identity",
+      document({
+        schemas: {
+          "Shared.UserDto": {
+            type: "object",
+            required: ["id"],
+            properties: { id: { type: "string" } },
+          },
+        },
+      }),
+    );
+    await writeSwagger(
+      root,
+      "infrastructure",
+      document({
+        schemas: {
+          "Shared.UserDto": {
+            type: "object",
+            required: ["id"],
+            properties: { id: { type: "number" } },
+          },
+        },
+      }),
+    );
+    const cfg = config([service("identity"), service("infrastructure")], {
+      typeExports: {
+        aliases: [
+          { service: "identity", schema: "Shared.UserDto", exportAs: "IdentityUser" },
+          {
+            service: "infrastructure",
+            schema: "Shared.UserDto",
+            exportAs: "InfrastructureUser",
+          },
+        ],
+      },
+    });
+    await generate({
+      xapiForgeConfig: cfg,
+      projectId: "demo",
+      swaggerDir: "swagger",
+      outputDir: "generated",
+    });
+
+    const apiTypes = await readFile(join(root, "generated/demo/api-types.ts"), "utf8");
+    assert.match(apiTypes, /export interface SchemasByService/);
+    assert.match(apiTypes, /export type SchemaOf</);
+    assert.match(apiTypes, /export type IdentityUser = SchemaOf<"identity", "Shared\.UserDto">/);
+    assert.match(
+      apiTypes,
+      /export type InfrastructureUser = SchemaOf<"infrastructure", "Shared\.UserDto">/,
+    );
+    assert.doesNotMatch(apiTypes, /export type AllSchemas/);
+
+    await writeFile(
+      join(root, "usage.ts"),
+      `import type { SchemaOf } from "./generated/demo/api-types.js";
+const identity: SchemaOf<"identity", "Shared.UserDto"> = { id: "user-1" };
+const infrastructure: SchemaOf<"infrastructure", "Shared.UserDto"> = { id: 1 };
+void identity;
+void infrastructure;
+`,
+      "utf8",
+    );
+    await writeFile(
+      join(root, "tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: "ES2022",
+          module: "ESNext",
+          moduleResolution: "Bundler",
+          skipLibCheck: true,
+        },
+        include: ["usage.ts"],
+      }),
+      "utf8",
+    );
+    const compiled = spawnSync(process.execPath, [tscPath, "-p", join(root, "tsconfig.json")], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    assert.equal(compiled.status, 0, `${compiled.stdout}\n${compiled.stderr}`);
+  });
+});
+
+test("schema alias collisions fail with both identities and explicit aliases resolve them", async () => {
+  await withTempProject(async (root) => {
+    for (const serviceName of ["identity", "infrastructure"]) {
+      await writeSwagger(
+        root,
+        serviceName,
+        document({ schemas: { "Shared.UserDto": { type: "object" } } }),
+      );
+    }
+    const services = [service("identity"), service("infrastructure")];
+    await assert.rejects(
+      generate({
+        xapiForgeConfig: config(services),
+        projectId: "demo",
+        swaggerDir: "swagger",
+        outputDir: "generated",
+      }),
+      (error) => {
+        assert.match(error.message, /schema alias 冲突：UserDto/);
+        assert.match(error.message, /identity\/Shared\.UserDto/);
+        assert.match(error.message, /infrastructure\/Shared\.UserDto/);
+        return true;
+      },
+    );
+    assert.equal(existsSync(join(root, "generated")), false);
+
+    await assert.rejects(
+      generate({
+        xapiForgeConfig: config(services, {
+          typeExports: {
+            aliases: [{ service: "identity", schema: "MissingDto", exportAs: "IdentityMissing" }],
+          },
+        }),
+        projectId: "demo",
+        swaggerDir: "swagger",
+        outputDir: "generated",
+      }),
+      /显式 alias 指向不存在的 schema：identity\/MissingDto/,
+    );
+  });
+});
+
+test("legacy multi-service AllSchemas refuses duplicate full schema names", async () => {
+  await withTempProject(async (root) => {
+    for (const serviceName of ["identity", "infrastructure"]) {
+      await writeSwagger(
+        root,
+        serviceName,
+        document({ schemas: { "Shared.UserDto": { type: "object" } } }),
+      );
+    }
+    await assert.rejects(
+      generate({
+        xapiForgeConfig: config([service("identity"), service("infrastructure")], {
+          compatibility: { legacyAllSchemas: true },
+          typeExports: {
+            aliases: [
+              { service: "identity", schema: "Shared.UserDto", exportAs: "IdentityUser" },
+              {
+                service: "infrastructure",
+                schema: "Shared.UserDto",
+                exportAs: "InfrastructureUser",
+              },
+            ],
+          },
+        }),
+        projectId: "demo",
+        swaggerDir: "swagger",
+        outputDir: "generated",
+      }),
+      /legacyAllSchemas 无法安全生成/,
+    );
   });
 });
 

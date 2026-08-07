@@ -66,6 +66,10 @@ export interface ProjectConfig {
   services: ServiceConfig[];
   /** project 级 hooks（service 未显式配置时优先于 root hooks）。 */
   hooks?: GenapiHooks;
+  /** v2 schema 便利导出规则。 */
+  typeExports?: ProjectTypeExportConfig;
+  /** 临时兼容开关；新项目不应开启。 */
+  compatibility?: GenapiCompatibilityConfig;
 }
 
 /**
@@ -86,6 +90,31 @@ export interface NamespacePrefixAlias {
   match: string;
   /** Namespace name to group matching schemas under（如 'Module'） */
   namespace: string;
+}
+
+export interface NamespaceRule {
+  /** 仅匹配指定 service；省略表示 project 内所有 service。 */
+  service?: string;
+  match: string;
+  namespace: string;
+}
+
+export interface SchemaAliasRule {
+  service: string;
+  schema: string;
+  exportAs: string;
+  namespace?: string;
+}
+
+export interface ProjectTypeExportConfig {
+  collisionPolicy?: "error";
+  namespaces?: NamespaceRule[];
+  aliases?: SchemaAliasRule[];
+}
+
+export interface GenapiCompatibilityConfig {
+  /** @deprecated 多 service 下临时保留旧 AllSchemas；仅允许 schema full name 全局唯一。 */
+  legacyAllSchemas?: boolean;
 }
 
 export interface XApiForgeConfig {
@@ -412,6 +441,89 @@ export function validateConfig(config: XApiForgeConfig): void {
       }
       runtimeKeys.set(runtimeKey, service.name);
     }
+
+    if (project.compatibility !== undefined) {
+      if (!isRecord(project.compatibility)) {
+        throw configError(`${projectPath}.compatibility 必须是对象`);
+      }
+      if (
+        project.compatibility.legacyAllSchemas !== undefined &&
+        typeof project.compatibility.legacyAllSchemas !== "boolean"
+      ) {
+        throw configError(`${projectPath}.compatibility.legacyAllSchemas 必须是 boolean`);
+      }
+    }
+
+    if (project.typeExports !== undefined) {
+      if (!isRecord(project.typeExports)) {
+        throw configError(`${projectPath}.typeExports 必须是对象`);
+      }
+      if (
+        project.typeExports.collisionPolicy !== undefined &&
+        project.typeExports.collisionPolicy !== "error"
+      ) {
+        throw configError(`${projectPath}.typeExports.collisionPolicy 目前只支持 "error"`);
+      }
+
+      const namespaceRules = project.typeExports.namespaces ?? [];
+      if (!Array.isArray(namespaceRules)) {
+        throw configError(`${projectPath}.typeExports.namespaces 必须是数组`);
+      }
+      const namespaceRuleKeys = new Set<string>();
+      for (const [index, rule] of namespaceRules.entries()) {
+        const rulePath = `${projectPath}.typeExports.namespaces[${index}]`;
+        if (!isRecord(rule)) throw configError(`${rulePath} 必须是对象`);
+        if (rule.service !== undefined) {
+          assertConfigId(rule.service, `${rulePath}.service`);
+          if (!serviceIds.has(rule.service)) {
+            throw configError(
+              `${rulePath}.service "${rule.service}" 不属于 project ${project.name}`,
+            );
+          }
+        }
+        assertNonEmptyString(rule.match, `${rulePath}.match`);
+        assertTypeScriptIdentifier(rule.namespace, `${rulePath}.namespace`);
+        const ruleKey = `${rule.service ?? "*"}\u0000${rule.match}`;
+        if (namespaceRuleKeys.has(ruleKey)) {
+          throw configError(
+            `${rulePath} 重复匹配 service=${rule.service ?? "*"}, match=${rule.match}`,
+          );
+        }
+        namespaceRuleKeys.add(ruleKey);
+      }
+
+      const aliasRules = project.typeExports.aliases ?? [];
+      if (!Array.isArray(aliasRules)) {
+        throw configError(`${projectPath}.typeExports.aliases 必须是数组`);
+      }
+      const aliasedSchemas = new Set<string>();
+      const aliasTargets = new Set<string>();
+      for (const [index, rule] of aliasRules.entries()) {
+        const rulePath = `${projectPath}.typeExports.aliases[${index}]`;
+        if (!isRecord(rule)) throw configError(`${rulePath} 必须是对象`);
+        assertConfigId(rule.service, `${rulePath}.service`);
+        if (!serviceIds.has(rule.service)) {
+          throw configError(`${rulePath}.service "${rule.service}" 不属于 project ${project.name}`);
+        }
+        assertNonEmptyString(rule.schema, `${rulePath}.schema`);
+        assertTypeScriptIdentifier(rule.exportAs, `${rulePath}.exportAs`);
+        if (rule.namespace !== undefined) {
+          assertTypeScriptIdentifier(rule.namespace, `${rulePath}.namespace`);
+        }
+        const schemaKey = `${rule.service}\u0000${rule.schema}`;
+        if (aliasedSchemas.has(schemaKey)) {
+          throw configError(`${rulePath} 重复配置 schema ${rule.service}/${rule.schema}`);
+        }
+        aliasedSchemas.add(schemaKey);
+        const targetKey = `${rule.namespace ?? ""}\u0000${rule.exportAs}`;
+        if (aliasTargets.has(targetKey)) {
+          throw configError(
+            `${rulePath} 的导出目标 ${rule.namespace ? `${rule.namespace}.` : ""}${rule.exportAs} 重复`,
+          );
+        }
+        aliasTargets.add(targetKey);
+      }
+    }
   }
 
   if (config.namespacePrefixAliases !== undefined) {
@@ -620,6 +732,8 @@ async function buildProjectArtifacts(opts: GenerateOptions): Promise<ProjectArti
       project.name,
       project.displayName,
       serviceModels,
+      project.typeExports,
+      project.compatibility,
       opts.xapiForgeConfig.namespacePrefixAliases,
     );
     files.set("api-types.ts", normalizeLineEndings(apiTypesContent));
@@ -1272,6 +1386,8 @@ function renderApiTypes(
   projectId: string,
   projectDisplay: string,
   serviceModels: ServiceModel[],
+  typeExports?: ProjectTypeExportConfig,
+  compatibility?: GenapiCompatibilityConfig,
   namespacePrefixAliases?: NamespacePrefixAlias[],
 ): string {
   const lines: string[] = [];
@@ -1284,10 +1400,16 @@ function renderApiTypes(
   lines.push(` * 数据源：openapi-typescript 生成的 components.schemas（见 ./types/<service>.ts）`);
   lines.push(` * 项目：${projectDisplay}（${projectId}），service 数：${serviceNames.length}`);
   lines.push(" *");
-  if (namespacePrefixAliases && namespacePrefixAliases.length > 0) {
-    lines.push(" * 命名空间分组（namespacePrefixAliases 配置）：");
-    for (const npa of namespacePrefixAliases) {
-      lines.push(` *   ${npa.match} → namespace ${npa.namespace}`);
+  const namespaceRules = typeExports?.namespaces ?? [];
+  if (namespaceRules.length > 0 || (namespacePrefixAliases?.length ?? 0) > 0) {
+    lines.push(" * 命名空间分组：");
+    for (const rule of namespaceRules) {
+      lines.push(
+        ` *   ${rule.service ? `${rule.service}: ` : ""}${rule.match} → namespace ${rule.namespace}`,
+      );
+    }
+    for (const rule of namespacePrefixAliases ?? []) {
+      lines.push(` *   [legacy] ${rule.match} → namespace ${rule.namespace}`);
     }
     lines.push(" *");
   }
@@ -1318,141 +1440,133 @@ function renderApiTypes(
     return "";
   }
   function safeAlias(raw: string): string {
-    // 用 safeKey 过滤非法字符；如果仍以数字开头，前缀 _ 让它合法
+    // 用 safeKey 过滤非法字符；数字开头或 TypeScript 保留字统一前缀 _。
     const k = raw.replace(/[^A-Za-z0-9_$]/g, "_");
-    return /^[0-9]/.test(k) ? `_${k}` : k;
+    return /^[0-9]/.test(k) || TYPESCRIPT_RESERVED_WORDS.has(k) ? `_${k}` : k;
   }
 
-  // 命名空间匹配：schema full-name 前缀 → namespace 名
-  // 优先级：配置中先出现的优先（先匹配先生效）
-  function matchNamespace(full: string): string | null {
-    if (!namespacePrefixAliases || namespacePrefixAliases.length === 0) return null;
-    for (const npa of namespacePrefixAliases) {
-      if (full.startsWith(npa.match)) {
-        return safeAlias(npa.namespace);
+  // 命名空间匹配按配置顺序执行；project 级规则优先于 legacy root 规则。
+  function matchNamespace(service: string, full: string): string | null {
+    for (const rule of namespaceRules) {
+      if ((rule.service === undefined || rule.service === service) && full.startsWith(rule.match)) {
+        return rule.namespace;
       }
+    }
+    for (const rule of namespacePrefixAliases ?? []) {
+      if (full.startsWith(rule.match)) return rule.namespace;
     }
     return null;
   }
 
-  // 校验 namespace 配置：safeAlias 后不得冲突，否则不同前缀的 schema 会静默合并
-  if (namespacePrefixAliases && namespacePrefixAliases.length > 0) {
-    const seen = new Map<string, string>();
-    for (const npa of namespacePrefixAliases) {
-      const safe = safeAlias(npa.namespace);
-      const prev = seen.get(safe);
-      if (prev) {
-        throw new Error(
-          `[genapi] namespacePrefixAliases 冲突："${prev}" 和 "${npa.namespace}" → 同一 safeAlias "${safe}"，` +
-            "请检查 namespace 配置，避免不同前缀的 schema 被静默合并。",
-        );
-      }
-      seen.set(safe, npa.namespace);
-    }
-  }
-
-  // ---- 分类：namespace 内 vs 全局 ----
-  // namespace 内：短名唯一（组内冲突 skip）
-  // 全局：短名冲突检测（同现有逻辑）
-
-  interface NamespacedEntry {
-    namespace: string;
-    alias: string;
-    full: string;
-    svc: string;
-  }
-  interface FlatEntry {
+  interface ExportEntry {
+    namespace: string | null;
     alias: string;
     full: string;
     svc: string;
   }
 
-  const byNamespace = new Map<string, NamespacedEntry[]>();
-  const namespaceAliasUsed = new Map<string, Set<string>>(); // namespace → used aliases
-
-  const flatEntries: FlatEntry[] = [];
-  const flatAliasUsed = new Set<string>();
-  const shortCount = new Map<string, number>();
-
-  // 第一遍：计算每个 schema 的 namespace + short alias（只算一次），同时统计全局短名冲突数
-  const enriched: Array<{ svc: string; full: string; ns: string | null; short: string }> = [];
-  for (const r of collected) {
-    const ns = matchNamespace(r.full);
-    const short = shortAlias(r.full);
-    enriched.push({ svc: r.svc, full: r.full, ns, short });
-    if (!ns && short) {
-      shortCount.set(short, (shortCount.get(short) ?? 0) + 1);
+  const explicitAliases = new Map(
+    (typeExports?.aliases ?? []).map((rule) => [`${rule.service}\u0000${rule.schema}`, rule]),
+  );
+  for (const rule of typeExports?.aliases ?? []) {
+    const model = serviceModels.find((candidate) => candidate.config.name === rule.service)!;
+    if (!(rule.schema in model.schemas)) {
+      throw new Error(
+        `[genapi] 显式 alias 指向不存在的 schema：${rule.service}/${rule.schema} → ${rule.exportAs}`,
+      );
     }
   }
 
-  // 第二遍：分类入库（直接用预计算的 ns + short，不再重复 matchNamespace）
-  for (const r of enriched) {
-    if (!r.short) continue;
-
-    if (r.ns) {
-      // namespace 内：短名唯一即可，冲突 skip
-      const alias = safeAlias(r.short);
-      let aliasSet = namespaceAliasUsed.get(r.ns);
-      if (!aliasSet) {
-        aliasSet = new Set();
-        namespaceAliasUsed.set(r.ns, aliasSet);
-      }
-      if (aliasSet.has(alias)) continue;
-      aliasSet.add(alias);
-      if (!byNamespace.has(r.ns)) byNamespace.set(r.ns, []);
-      byNamespace.get(r.ns)!.push({ namespace: r.ns, alias, full: r.full, svc: r.svc });
-    } else {
-      // 全局：保留原冲突检测逻辑
-      let alias = safeAlias(r.short);
-      if ((shortCount.get(r.short) ?? 0) > 1) {
-        const parts = r.full.split(/[.[\], ]+/).filter(Boolean);
-        const tail = parts.slice(-2).join("_");
-        alias = safeAlias(tail);
-      }
-      if (flatAliasUsed.has(alias)) continue;
-      flatAliasUsed.add(alias);
-      flatEntries.push({ alias, full: r.full, svc: r.svc });
+  const exportTargets = new Map<string, ExportEntry>();
+  const byNamespace = new Map<string, ExportEntry[]>();
+  const flatEntries: ExportEntry[] = [];
+  const addExport = (entry: ExportEntry): void => {
+    const target = `${entry.namespace ?? ""}\u0000${entry.alias}`;
+    const previous = exportTargets.get(target);
+    if (previous) {
+      const qualified = entry.namespace ? `${entry.namespace}.${entry.alias}` : entry.alias;
+      throw new Error(
+        `[genapi] schema alias 冲突：${qualified}\n` +
+          `  - ${previous.svc}/${previous.full}\n` +
+          `  - ${entry.svc}/${entry.full}\n` +
+          "请在 projects[].typeExports.aliases 中为至少一个 schema 配置唯一 exportAs。",
+      );
     }
+    if (entry.namespace === null && byNamespace.has(entry.alias)) {
+      throw new Error(`[genapi] 顶层 alias "${entry.alias}" 与同名 namespace 冲突`);
+    }
+    if (
+      entry.namespace !== null &&
+      flatEntries.some((candidate) => candidate.alias === entry.namespace)
+    ) {
+      throw new Error(`[genapi] namespace "${entry.namespace}" 与同名顶层 alias 冲突`);
+    }
+    exportTargets.set(target, entry);
+    if (entry.namespace === null) flatEntries.push(entry);
+    else {
+      const entries = byNamespace.get(entry.namespace) ?? [];
+      entries.push(entry);
+      byNamespace.set(entry.namespace, entries);
+    }
+  };
+
+  for (const schema of collected) {
+    const explicit = explicitAliases.get(`${schema.svc}\u0000${schema.full}`);
+    const automaticAlias = shortAlias(schema.full);
+    const alias = explicit?.exportAs ?? (automaticAlias ? safeAlias(automaticAlias) : "");
+    if (!alias) continue;
+    addExport({
+      namespace: explicit?.namespace ?? matchNamespace(schema.svc, schema.full),
+      alias,
+      full: schema.full,
+      svc: schema.svc,
+    });
   }
 
-  // 收集所有用到的 service（import 用）
-  const svcSet = new Set<string>();
-  for (const entries of byNamespace.values()) {
-    for (const e of entries) svcSet.add(e.svc);
-  }
-  for (const e of flatEntries) svcSet.add(e.svc);
-  const servicesUsed = [...svcSet];
-
-  // import 用到的 components（按 svc 单独 import —— 不交叉合并 components，
-  // 因为 ABP swagger 不同 service 可能给同名 schema 写不同字段，`&` 后 `T[K]` 退化成 never
-  // —— 策略：定位 alias 时锁回它原 service 的 components）
+  // 每个 service 的 components 都是 canonical schema 来源，不跨 service 合并。
   for (const svc of serviceNames) {
-    if (!svcSet.has(svc)) continue;
     lines.push(`import type { components as ${cap(svc)}Components } from "./types/${svc}.js";`);
   }
   lines.push("");
 
-  // ---- AllSchemas ----
-  if (servicesUsed.length > 0) {
-    if (servicesUsed.length === 1) {
-      const only = servicesUsed[0]!;
-      lines.push(`export type AllSchemas = ${cap(only)}Components["schemas"];`);
-    } else {
-      lines.push(
-        `export type AllSchemas = UnionToIntersection<${servicesUsed
-          .map((s) => `${cap(s)}Components["schemas"]`)
-          .join(" | ")}>;`,
-      );
-      lines.push("type UnionToIntersection<U> =");
-      lines.push("  (U extends unknown ? (x: U) => void : never) extends");
-      lines.push("    (x: infer I) => void");
-      lines.push("    ? I");
-      lines.push("    : never;");
-    }
+  lines.push("export interface SchemasByService {");
+  for (const svc of serviceNames) {
+    lines.push(`  ${JSON.stringify(svc)}: ${cap(svc)}Components["schemas"];`);
+  }
+  lines.push("}");
+  lines.push("");
+  lines.push("export type ServiceName = keyof SchemasByService;");
+  lines.push("export type SchemaOf<");
+  lines.push("  Service extends ServiceName,");
+  lines.push("  Name extends keyof SchemasByService[Service],");
+  lines.push("> = SchemasByService[Service][Name];");
+  lines.push("");
+
+  if (serviceNames.length === 1) {
+    lines.push(`export type AllSchemas = ${cap(serviceNames[0]!)}Components["schemas"];`);
     lines.push("");
-  } else {
-    lines.push("// 项目下无 schema");
-    lines.push("export type AllSchemas = Record<string, never>;");
+  } else if (compatibility?.legacyAllSchemas === true) {
+    const schemaOwners = new Map<string, string>();
+    for (const schema of collected) {
+      const previousService = schemaOwners.get(schema.full);
+      if (previousService) {
+        throw new Error(
+          `[genapi] compatibility.legacyAllSchemas 无法安全生成：schema "${schema.full}" 同时存在于 ${previousService} 和 ${schema.svc}`,
+        );
+      }
+      schemaOwners.set(schema.full, schema.svc);
+    }
+    lines.push("/** @deprecated 多 service 请改用 SchemasByService / SchemaOf。 */");
+    lines.push(
+      `export type AllSchemas = UnionToIntersection<${serviceNames
+        .map((service) => `${cap(service)}Components["schemas"]`)
+        .join(" | ")}>;`,
+    );
+    lines.push("type UnionToIntersection<U> =");
+    lines.push("  (U extends unknown ? (value: U) => void : never) extends");
+    lines.push("    (value: infer Intersection) => void");
+    lines.push("    ? Intersection");
+    lines.push("    : never;");
     lines.push("");
   }
 
@@ -1467,7 +1581,9 @@ function renderApiTypes(
     entries.sort((a, b) => lexicalCompare(a.alias, b.alias));
     for (const e of entries) {
       lines.push(`  /** ${e.full}（原 service: ${e.svc}）*/`);
-      lines.push(`  export type ${e.alias} = ${cap(e.svc)}Components["schemas"]["${e.full}"];`);
+      lines.push(
+        `  export type ${e.alias} = SchemaOf<${JSON.stringify(e.svc)}, ${JSON.stringify(e.full)}>;`,
+      );
     }
     lines.push("}");
     lines.push("");
@@ -1478,7 +1594,9 @@ function renderApiTypes(
   flatEntries.sort((a, b) => lexicalCompare(a.alias, b.alias));
   for (const e of flatEntries) {
     lines.push(`/** ${e.full}（原 service: ${e.svc}）*/`);
-    lines.push(`export type ${e.alias} = ${cap(e.svc)}Components["schemas"]["${e.full}"];`);
+    lines.push(
+      `export type ${e.alias} = SchemaOf<${JSON.stringify(e.svc)}, ${JSON.stringify(e.full)}>;`,
+    );
   }
   if (flatEntries.length > 0) lines.push("");
 
