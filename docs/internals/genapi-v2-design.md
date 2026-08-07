@@ -318,6 +318,8 @@ service > project > root
 
 service 写 `{}` 表示显式禁用继承。hook 后的 document 必须仍是 OpenAPI 3.x，且语义位置只允许可解析的内部 `$ref`。业务 example/default/value/vendor extension 是任意 JSON，其中同名 key 不参与引用校验。当前依赖会把语义位置的 `$dynamicRef`/`$recursiveRef` 静默降级为 `unknown`，因此内核明确拒绝这两种引用，而不是生成虚假的弱类型。业务特殊格式由业务 hook 处理，内核不包含 ABP、SpringBoot 或其他框架特判。
 
+通用 runtime enum helper 在 `transformSwagger` 中把 override/append 合并进标准 enum 一次，并把 service 级运行时导出清单写入该 service 的 hook context。`transformTypes` 只读取冻结的 `normalizedDocument` 和创建 helper 时的 metadata 快照；`api-types.ts` 再按现有 service/prefix/alias 规则重导出 const、Options、Labels 和 extensions。禁止重新读取 `swaggerPath` 或使用跨 service 全局缓存。
+
 ## 11. 原子生成
 
 ```text

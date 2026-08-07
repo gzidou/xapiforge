@@ -50,6 +50,7 @@ import {
   safeCommentText,
   safeRuntimeKey,
   TYPESCRIPT_RESERVED_WORDS,
+  TYPESCRIPT_UNSAFE_OBJECT_KEYS,
 } from "./naming.js";
 import { parseJsonInput } from "./json-input.js";
 import {
@@ -65,6 +66,7 @@ import {
 import { isPathInside, resolvePhysicalPath } from "./filesystem-path.js";
 import { resolveSwaggerInputPath, type SwaggerSource } from "./swagger-source.js";
 import { renderApiTypes, type ProjectTypeExportConfig } from "./type-exports.js";
+import type { RuntimeEnumExportDescriptor } from "./runtime-enum-types.js";
 
 export type { SwaggerFileSource, SwaggerSource, SwaggerUrlSource } from "./swagger-source.js";
 export type {
@@ -151,6 +153,8 @@ export interface GenapiHookContext {
   originalDocument?: unknown;
   /** transformSwagger 后、供所有后续步骤复用的 OpenAPI 文档。 */
   normalizedDocument?: unknown;
+  /** createRuntimeEnumHooks 写入的 service 级运行时导出清单，供 namespace 重导出。 */
+  runtimeEnumExports?: readonly RuntimeEnumExportDescriptor[];
 }
 
 /**
@@ -168,10 +172,9 @@ export type TransformSwaggerHook = (swagger: unknown, ctx: GenapiHookContext) =>
 /**
  * Hook 3：类型生成后、写盘前
  *
- * 用途：对 openapi-typescript 的产物做后处理。例如根据 swagger 的
- * `x-enum-varnames` / `x-enum-labels` 注入 runtime enum map 常量，
- * 让业务侧既能用类型 `MessageType = 0 | 1 | 2`，也能用常量 `MessageType[1] === "New"`
- * 或反向 `MessageType.New === 1`。
+ * 用途：对 openapi-typescript 的产物做后处理。例如根据 normalizedDocument 的
+ * `x-enum-varnames` / `x-enum-labels` 注入 runtime enum 常量、Options 和页面元数据。
+ * Hook 不应重新读取 ctx.swaggerPath；否则类型和其它生成视图可能基于不同输入。
  */
 export type TransformTypesHook = (typesContent: string, ctx: GenapiHookContext) => Promise<string>;
 
@@ -181,7 +184,13 @@ export interface GenapiHooks {
 }
 
 export { createRuntimeEnumHooks } from "./runtime-enum.js";
-export type { RuntimeEnumHooksOptions, RuntimeEnumMetadata } from "./runtime-enum.js";
+export type {
+  RuntimeEnumAppendValue,
+  RuntimeEnumExtensionValue,
+  RuntimeEnumExportDescriptor,
+  RuntimeEnumHooksOptions,
+  RuntimeEnumMetadata,
+} from "./runtime-enum.js";
 
 // ---------- generator 输入 ----------
 
@@ -252,6 +261,7 @@ interface ServiceModel {
   originalDocument: OpenAPI3;
   document: OpenAPI3;
   schemas: Readonly<Record<string, unknown>>;
+  runtimeEnumExports: readonly RuntimeEnumExportDescriptor[];
   serviceInfo: ServiceInfo;
   hooks?: GenapiHooks;
   hookContext: GenapiHookContext;
@@ -337,7 +347,11 @@ function assertConfigId(value: unknown, path: string): asserts value is string {
 
 function assertTypeScriptIdentifier(value: unknown, path: string): asserts value is string {
   assertNonEmptyString(value, path);
-  if (!TYPESCRIPT_IDENTIFIER_PATTERN.test(value) || TYPESCRIPT_RESERVED_WORDS.has(value)) {
+  if (
+    !TYPESCRIPT_IDENTIFIER_PATTERN.test(value) ||
+    TYPESCRIPT_RESERVED_WORDS.has(value) ||
+    TYPESCRIPT_UNSAFE_OBJECT_KEYS.has(value)
+  ) {
     throw configError(`${path} 必须是非保留的 TypeScript 标识符，实际为 "${value}"`);
   }
 }
@@ -798,6 +812,7 @@ async function loadServiceModels(
       originalDocument,
       document: normalizedDocument,
       schemas: components?.schemas ?? {},
+      runtimeEnumExports: hookContext.runtimeEnumExports ?? [],
       serviceInfo: { name: service.name, endpointCount },
       hooks,
       hookContext,
@@ -934,6 +949,7 @@ async function buildProjectArtifacts(opts: GenerateOptions): Promise<ProjectArti
       services: serviceModels.map((model) => ({
         name: model.config.name,
         schemas: model.schemas,
+        runtimeEnumExports: model.runtimeEnumExports,
       })),
       typeExports: project.typeExports,
     });

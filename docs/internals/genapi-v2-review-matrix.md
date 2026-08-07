@@ -18,6 +18,7 @@
 | generic/空 schema 边界                             | generic full name 可由 `SchemaOf` 或显式 alias 访问；无 schema service 仍可编译 | 不根据不稳定 generic metadata 自动猜短名                       | 最小模拟测试，不依赖真实 Swagger 是否包含该形态                 |
 | 无关后端变化不移动已有公开类型                     | schema 增加、删除、类型变化后稳定 import 和未变 schema 片段保持一致             | 新碰撞会停止事务，不覆盖上次有效产物                           | `--check` 三项目均为 `UNCHANGED`                                |
 | 配置和输入顺序不参与身份                           | service 顺序、JSON object key 顺序、prefix 规则顺序重排不漂移                   | 生成名称/runtime key 碰撞在配置阶段失败                        | manifest 不含 source、时间戳或绝对路径                          |
+| runtime enum 页面合同                              | override label/name、append、Options、颜色/图标扩展、序列化与 Flags 编译        | 未知 value、非 JSON、导出/namespace 碰撞在写盘前失败           | dcenter ConfigMethod 真实 namespace 用法 + 三模式模拟           |
 | 单次规范化与业务 hooks                             | 权威 document 深度冻结；第三方仅接收 literal-ref 安全视图；其余下游读同一对象   | hook 后变异、external/unresolved 语义 `$ref`、不合法结果失败   | dcenter 的 45 个非标准 integer enum 由业务 hook 规范化          |
 | 异常 OpenAPI 与生成源码安全                        | 多 tag/原型同名 tag、内部 PathItem `$ref`、literal JSON `$ref` 正确分流         | 非对象 schema/operation、动态引用、循环 PathItem、注释截断失败 | 恶意 schema/display/enum 名通过 TypeScript AST 验证             |
 | 输入与输出隔离                                     | configDirectory、BOM 和跨 project source 预检                                   | 任一 Swagger 位于目标输出内即拒绝，原文件保持                  | 临时项目验证同 project 与跨 project 路径                        |

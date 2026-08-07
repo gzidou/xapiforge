@@ -10,7 +10,7 @@ All notable changes to xapiforge are documented here.
 - Hardened genapi against stalled or oversized response bodies, oversized local inputs, malformed PathItems/references, prototype-like schema/tag names, generated-comment injection, input/output overlap, cache/source collisions, invalid CLI selections, sensitive URL query logging, abnormal output nodes, and stale/active lock edge cases.
 - Added UTF-8 BOM support, explicit programmatic `configDirectory`, accurate multi-tag and referenced-PathItem endpoint counts, and a published Node.js `>=20.19` requirement.
 - Added two intentional v2 client initialization forms: simple `NetConfig` for one shared runtime endpoint, and layered `service override > defaults` for per-service runtime boundaries.
-- Added opt-in standard runtime enum maps, explicit Flags handling, metadata validation, and a runnable legacy enum service hook; framework-specific normalization remains outside the generator default path.
+- Added opt-in runtime enum constants, Names/Labels/Options, label/name overrides, appended values, JSON display extensions (colors/icons/etc.), serialization maps, explicit Flags handling, and namespace-aware re-exports without rereading Swagger; framework-specific normalization remains in business `preprocessSwagger` hooks.
 - Removed `AllSchemas`, legacy Swagger URL fragments, root `namespacePrefixAliases`, and compatibility switches; v2 intentionally has no legacy configuration path.
 - Changed hook resolution to the documented whole-object precedence `service > project > root`; explicit `{}` disables inherited hooks.
 - Added separate base, infrastructure, standard-enum, and legacy demo/test fixtures plus independent CLI coverage for config-side helper imports.

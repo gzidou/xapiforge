@@ -40,6 +40,9 @@ export const TYPESCRIPT_RESERVED_WORDS: ReadonlySet<string> = new Set([
   "yield",
 ]);
 
+/** 在 namespace/object 运行时导出中会触发 JavaScript 特殊语义的属性名。 */
+export const TYPESCRIPT_UNSAFE_OBJECT_KEYS: ReadonlySet<string> = new Set(["__proto__"]);
+
 /** 配置 ID（如 `fill-center`）到稳定 PascalCase 标识符。 */
 export function pascalCaseConfigId(value: string): string {
   return value
@@ -56,7 +59,11 @@ export function safeRuntimeKey(value: string): string {
 /** 把 schema 短名变成合法且稳定的 TypeScript alias。 */
 export function safeTypeAlias(value: string): string {
   const safe = value.replace(/[^A-Za-z0-9_$]/g, "_");
-  return /^[0-9]/.test(safe) || TYPESCRIPT_RESERVED_WORDS.has(safe) ? `_${safe}` : safe;
+  return /^[0-9]/.test(safe) ||
+    TYPESCRIPT_RESERVED_WORDS.has(safe) ||
+    TYPESCRIPT_UNSAFE_OBJECT_KEYS.has(safe)
+    ? `_${safe}`
+    : safe;
 }
 
 /** 把外部文本压成安全单行，避免结束符提前截断生成注释。 */

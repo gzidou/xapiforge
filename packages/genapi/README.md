@@ -116,10 +116,21 @@ Standard OpenAPI enums remain literal unions. Runtime constants are opt-in:
 import { createRuntimeEnumHooks } from "@xapiforge/genapi";
 
 const hooks = createRuntimeEnumHooks({
-  metadata: { "Sample.AccessMode": { isFlags: true } }
+  metadata: {
+    "Sample.DeviceState": {
+      overrideLabels: { 0: "Offline", 1: "Online" },
+      extensions: {
+        colors: { 0: "#999", 1: "#16a34a" },
+        icon: { 0: "WifiOff", 1: "Wifi" }
+      }
+    },
+    "Sample.AccessMode": { isFlags: true }
+  }
 });
 ```
 
-Non-standard Swagger normalization belongs in a business `transformSwagger` hook; it is not a generator default.
+The helper emits runtime constants, labels, names, options, lookup helpers, JSON-valued extensions, serialization maps, and Flags members. These exports follow the same service/prefix/alias namespaces as their schema types. `transformTypes` consumes `ctx.normalizedDocument`; it never rereads the source Swagger.
+
+Non-standard Swagger normalization belongs in a business `preprocessSwagger` hook; it is not a generator default.
 
 For offline specifications and initialization, see the [browser onboarding guide](https://gzidou.github.io/xapiforge/getting-started/browser). For v2 multi-service configuration, aliases, transactions, hooks, and migration, see the [genapi v2 guide](https://gzidou.github.io/xapiforge/guides/genapi-v2).

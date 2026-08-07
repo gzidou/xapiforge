@@ -121,12 +121,19 @@ import { createRuntimeEnumHooks } from "@xapiforge/genapi";
 
 const enumHooks = createRuntimeEnumHooks({
   metadata: {
+    "Sample.DeviceState": {
+      overrideLabels: { 0: "离线", 1: "在线" },
+      extensions: {
+        colors: { 0: "#999", 1: "#16a34a" },
+        icon: { 0: "WifiOff", 1: "Wifi" }
+      }
+    },
     "Sample.AccessMode": { isFlags: true }
   }
 });
 ```
 
-它读取标准 `enum`、`x-enum-varnames`、`x-enum-labels`，追加 `as const` runtime map。Flags 会在 `transformSwagger` 中把 API 字段放宽为 `number`。
+它读取标准 `enum`、`x-enum-varnames`、`x-enum-labels`，生成 const、Labels、Names、Options、ByLabel、扩展属性和工具函数。Flags 会在 `transformSwagger` 中把 API 字段放宽为 `number`。整组运行时产物按现有 service/prefix/alias 规则进入 `api-types.ts` namespace。
 
 历史字符串格式可通过 `preprocessSwagger` 先规范化：
 
@@ -139,6 +146,8 @@ const legacyHooks = createRuntimeEnumHooks({
 
 真实可编译示例见 `examples/demo-app/hooks/legacy-enum.ts`，详细规则见[枚举生成](./enums.md)。
 
+helper 在 `transformSwagger` 阶段合并 metadata 一次；`transformTypes` 只读取 `ctx.normalizedDocument`，不会重新读取 `ctx.swaggerPath`。业务自定义 hook 也应遵守这一点，避免类型、Options 与 manifest 分别基于不同文档。
+
 ## 开发和验证 hook
 
 至少准备一个脱敏 fixture，并验证：
@@ -147,8 +156,10 @@ const legacyHooks = createRuntimeEnumHooks({
 2. literal union 与实际序列化值一致；
 3. path/schema 增删会同步反映到类型、alias 和 endpoint 统计；
 4. 错误 metadata 在正式输出写入前失败；
-5. `--check` 不修改生成目录；
-6. 生成产物可由独立 TypeScript 消费者编译。
+5. Options、label 覆盖和颜色/图标等 extensions 被实际消费并编译；
+6. runtime enum 跟随 service/prefix/flat namespace；
+7. `--check` 不修改生成目录；
+8. 生成产物可由独立 TypeScript 消费者编译。
 
 ```bash
 pnpm --filter '@xapiforge/genapi' test

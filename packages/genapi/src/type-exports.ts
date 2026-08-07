@@ -1,4 +1,5 @@
 import { lexicalCompare, pascalCaseConfigId, safeCommentText, safeTypeAlias } from "./naming.js";
+import type { RuntimeEnumExportDescriptor } from "./runtime-enum-types.js";
 
 /** schema full name 前缀分组；所在层级由导出策略决定。 */
 export interface NamespaceRule {
@@ -34,6 +35,7 @@ export interface ProjectTypeExportConfig {
 export interface ApiTypesServiceModel {
   name: string;
   schemas: Readonly<Record<string, unknown>>;
+  runtimeEnumExports: readonly RuntimeEnumExportDescriptor[];
 }
 
 export interface RenderApiTypesOptions {
@@ -51,6 +53,18 @@ interface SchemaRef {
 interface ExportEntry extends SchemaRef {
   alias: string;
   namespace: string | null;
+  runtimeEnum?: RuntimeEnumExportDescriptor;
+}
+
+function runtimeImportName(service: string): string {
+  return `${pascalCaseConfigId(service)}Runtime`;
+}
+
+function runtimeDescriptor(
+  service: ApiTypesServiceModel,
+  schemaName: string,
+): RuntimeEnumExportDescriptor | undefined {
+  return service.runtimeEnumExports.find((descriptor) => descriptor.schemaName === schemaName);
 }
 
 function shortAlias(full: string): string {
@@ -95,6 +109,11 @@ function renderCanonicalTypes(lines: string[], services: readonly ApiTypesServic
     lines.push(
       `import type { components as ${pascalCaseConfigId(service.name)}Components } from "./types/${service.name}.js";`,
     );
+    if (service.runtimeEnumExports.length > 0) {
+      lines.push(
+        `import * as ${runtimeImportName(service.name)} from "./types/${service.name}.js";`,
+      );
+    }
   }
   lines.push("");
   lines.push("export interface SchemasByService {");
@@ -111,6 +130,44 @@ function renderCanonicalTypes(lines: string[], services: readonly ApiTypesServic
   lines.push("  Name extends keyof SchemasByService[Service],");
   lines.push("> = SchemasByService[Service][Name];");
   lines.push("");
+
+  if (services.some((service) => service.runtimeEnumExports.length > 0)) {
+    lines.push("/** canonical runtime enum registry；不依赖便利 alias 或 namespace 策略。 */");
+    lines.push("export const RuntimeEnumsByService = {");
+    for (const service of services) {
+      lines.push(`  ${JSON.stringify(service.name)}: {`);
+      for (const descriptor of [...service.runtimeEnumExports].sort((left, right) =>
+        lexicalCompare(left.schemaName, right.schemaName),
+      )) {
+        const runtime = runtimeImportName(service.name);
+        const base = descriptor.exportName;
+        // Computed keys avoid `__proto__` changing the registry object's prototype.
+        lines.push(`    [${JSON.stringify(descriptor.schemaName)}]: {`);
+        lines.push(`      value: ${runtime}.${base},`);
+        lines.push(`      labels: ${runtime}.${base}Labels,`);
+        lines.push(`      names: ${runtime}.${base}Names,`);
+        lines.push(`      options: ${runtime}.${base}Options,`);
+        lines.push(`      byLabel: ${runtime}.${base}ByLabel,`);
+        lines.push(`      getLabel: ${runtime}.get${base}Label,`);
+        lines.push(`      getName: ${runtime}.get${base}Name,`);
+        if (descriptor.extensionSuffixes.length > 0) {
+          lines.push("      extensions: {");
+          for (const suffix of descriptor.extensionSuffixes) {
+            lines.push(`        ${suffix}: ${runtime}.${base}${suffix},`);
+          }
+          lines.push("      },");
+        }
+        if (descriptor.serializeAs === "string") {
+          lines.push(`      serialize: ${runtime}.${base}Serialize,`);
+          lines.push(`      deserialize: ${runtime}.${base}Deserialize,`);
+        }
+        lines.push("    },");
+      }
+      lines.push("  },");
+    }
+    lines.push("} as const;");
+    lines.push("");
+  }
 }
 
 type ConvenienceExportStrategy = Exclude<TypeExportStrategy, "canonical-only">;
@@ -141,10 +198,12 @@ function collectConvenienceExports(options: {
   const directAliases = new Map<string, Set<string>>();
   const nestedNamespaces = new Map<string, Set<string>>();
   const reservedFlatNames = new Set([
+    "RuntimeEnumsByService",
     "SchemaOf",
     "SchemasByService",
     "ServiceName",
     ...options.services.map((service) => `${pascalCaseConfigId(service.name)}Components`),
+    ...options.services.map((service) => runtimeImportName(service.name)),
   ]);
 
   for (const schema of options.collected) {
@@ -201,11 +260,120 @@ function collectConvenienceExports(options: {
     directAliases.set(scope, direct);
     nestedNamespaces.set(scope, nested);
 
-    const entry = { service: schema.service, full: schema.full, alias, namespace };
+    const service = options.services.find((candidate) => candidate.name === schema.service)!;
+    const entry = {
+      service: schema.service,
+      full: schema.full,
+      alias,
+      namespace,
+      runtimeEnum: runtimeDescriptor(service, schema.full),
+    };
     targets.set(target, entry);
     entries.push(entry);
   }
   return entries;
+}
+
+function publicEntryNames(entry: ExportEntry): string[] {
+  const names = [entry.alias];
+  if (!entry.runtimeEnum) return names;
+  const base = entry.alias;
+  names.push(
+    `${base}ByLabel`,
+    `${base}Labels`,
+    `${base}Names`,
+    `${base}Option`,
+    `${base}Options`,
+    `${base}Value`,
+    `get${base}Label`,
+    `get${base}Name`,
+  );
+  if (entry.runtimeEnum.isFlags) names.push(`${base}Member`);
+  for (const suffix of entry.runtimeEnum.extensionSuffixes) {
+    names.push(`${base}${suffix}`, `${base}${suffix}Value`);
+  }
+  if (entry.runtimeEnum.serializeAs === "string") {
+    names.push(`${base}Deserialize`, `${base}Serialize`, `deserialize${base}`, `serialize${base}`);
+  }
+  return names;
+}
+
+function assertConvenienceNamesUnique(
+  entries: readonly ExportEntry[],
+  strategy: ConvenienceExportStrategy,
+): void {
+  const namesByLocation = new Map<string, Map<string, ExportEntry>>();
+  const directNamesByScope = new Map<string, Set<string>>();
+  const namespacesByScope = new Map<string, Set<string>>();
+  for (const entry of entries) {
+    const scope = strategy === "service-namespace" ? entry.service : "*";
+    const location = `${scope}\0${entry.namespace ?? ""}`;
+    const names = namesByLocation.get(location) ?? new Map<string, ExportEntry>();
+    for (const name of new Set(publicEntryNames(entry))) {
+      const previous = names.get(name);
+      if (previous && (previous.service !== entry.service || previous.full !== entry.full)) {
+        throw new Error(
+          `[genapi] runtime enum/schema 导出冲突：${name}\n` +
+            `  - ${previous.service}/${previous.full}\n` +
+            `  - ${entry.service}/${entry.full}`,
+        );
+      }
+      names.set(name, entry);
+      if (entry.namespace === null) {
+        const direct = directNamesByScope.get(scope) ?? new Set<string>();
+        direct.add(name);
+        directNamesByScope.set(scope, direct);
+      }
+    }
+    namesByLocation.set(location, names);
+    if (entry.namespace !== null) {
+      const namespaces = namespacesByScope.get(scope) ?? new Set<string>();
+      namespaces.add(entry.namespace);
+      namespacesByScope.set(scope, namespaces);
+    }
+  }
+  for (const [scope, directNames] of directNamesByScope) {
+    for (const namespace of namespacesByScope.get(scope) ?? []) {
+      if (directNames.has(namespace)) {
+        throw new Error(`[genapi] runtime enum 导出 "${namespace}" 与同层 namespace 冲突`);
+      }
+    }
+  }
+}
+
+function renderRuntimeEntry(lines: string[], entry: ExportEntry, indent: string): void {
+  if (!entry.runtimeEnum) return;
+  const runtime = runtimeImportName(entry.service);
+  const privateBase = entry.runtimeEnum.exportName;
+  const publicBase = entry.alias;
+  lines.push(`${indent}export const ${publicBase} = ${runtime}.${privateBase};`);
+  lines.push(
+    `${indent}export type ${publicBase}Value = ${runtime}.${privateBase}Value;`,
+    `${indent}export const ${publicBase}Labels = ${runtime}.${privateBase}Labels;`,
+    `${indent}export const ${publicBase}Names = ${runtime}.${privateBase}Names;`,
+    `${indent}export const ${publicBase}Options = ${runtime}.${privateBase}Options;`,
+    `${indent}export type ${publicBase}Option = ${runtime}.${privateBase}Option;`,
+    `${indent}export const ${publicBase}ByLabel = ${runtime}.${privateBase}ByLabel;`,
+    `${indent}export const get${publicBase}Label = ${runtime}.get${privateBase}Label;`,
+    `${indent}export const get${publicBase}Name = ${runtime}.get${privateBase}Name;`,
+  );
+  if (entry.runtimeEnum.isFlags) {
+    lines.push(`${indent}export type ${publicBase}Member = ${runtime}.${privateBase}Member;`);
+  }
+  for (const suffix of entry.runtimeEnum.extensionSuffixes) {
+    lines.push(
+      `${indent}export const ${publicBase}${suffix} = ${runtime}.${privateBase}${suffix};`,
+      `${indent}export type ${publicBase}${suffix}Value = ${runtime}.${privateBase}${suffix}Value;`,
+    );
+  }
+  if (entry.runtimeEnum.serializeAs === "string") {
+    lines.push(
+      `${indent}export const ${publicBase}Serialize = ${runtime}.${privateBase}Serialize;`,
+      `${indent}export const ${publicBase}Deserialize = ${runtime}.${privateBase}Deserialize;`,
+      `${indent}export const serialize${publicBase} = ${runtime}.serialize${privateBase};`,
+      `${indent}export const deserialize${publicBase} = ${runtime}.deserialize${privateBase};`,
+    );
+  }
 }
 
 function renderFlatExports(lines: string[], entries: readonly ExportEntry[]): void {
@@ -230,6 +398,7 @@ function renderFlatExports(lines: string[], entries: readonly ExportEntry[]): vo
       lines.push(
         `  export type ${entry.alias} = SchemaOf<${JSON.stringify(entry.service)}, ${JSON.stringify(entry.full)}>;`,
       );
+      renderRuntimeEntry(lines, entry, "  ");
     }
     lines.push("}");
     lines.push("");
@@ -240,6 +409,7 @@ function renderFlatExports(lines: string[], entries: readonly ExportEntry[]): vo
     lines.push(
       `export type ${entry.alias} = SchemaOf<${JSON.stringify(entry.service)}, ${JSON.stringify(entry.full)}>;`,
     );
+    renderRuntimeEntry(lines, entry, "");
   }
   if (direct.length > 0) lines.push("");
 }
@@ -272,6 +442,7 @@ function renderServiceNamespaces(
       lines.push(
         `  export type ${entry.alias} = SchemaOf<${JSON.stringify(entry.service)}, ${JSON.stringify(entry.full)}>;`,
       );
+      renderRuntimeEntry(lines, entry, "  ");
     }
     for (const namespace of [...nested.keys()].sort(lexicalCompare)) {
       const group = nested.get(namespace)!;
@@ -283,6 +454,7 @@ function renderServiceNamespaces(
         lines.push(
           `    export type ${entry.alias} = SchemaOf<${JSON.stringify(entry.service)}, ${JSON.stringify(entry.full)}>;`,
         );
+        renderRuntimeEntry(lines, entry, "    ");
       }
       lines.push("  }");
     }
@@ -323,6 +495,7 @@ export function renderApiTypes(options: RenderApiTypesOptions): string {
     typeExports: options.typeExports,
     strategy,
   });
+  assertConvenienceNamesUnique(entries, strategy);
   if (strategy === "flat-strict") renderFlatExports(lines, entries);
   else renderServiceNamespaces(lines, services, entries);
   return lines.join("\n");

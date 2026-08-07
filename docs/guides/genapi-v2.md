@@ -209,6 +209,8 @@ const typeExports = { strategy: "canonical-only" as const };
 
 此模式只输出 `SchemasByService`、`ServiceName` 和 `SchemaOf`，不输出任何便利 namespace。它不能同时配置 `namespaces` 或 `aliases`。
 
+启用 `createRuntimeEnumHooks` 后，枚举 const、Labels、Names、Options、扩展属性和工具函数与 schema 使用同一套 namespace 决策。默认模式可直接使用 `WorkflowSchemas.WorkTaskStatusOptions`；命中 prefix 后使用 `FillCenterSchemas.ReportStatistics.StatusOptions`；`flat-strict` 跟随 project 顶层 namespace；`canonical-only` 通过 `RuntimeEnumsByService[service][fullName]` 访问。详见[枚举生成](./enums.md)。
+
 ## 类型稳定性合同
 
 genapi 保证以下变化不改变未受影响 identity 的访问路径：
