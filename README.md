@@ -73,6 +73,10 @@ pnpm generate:api myapp
 
 下一步按[浏览器应用接入](https://gzidou.github.io/xapiforge/getting-started/browser)创建 `AuthService` 并初始化生成的客户端。Capacitor 和 React Native 项目先看[接入方式选择](https://gzidou.github.io/xapiforge/getting-started/)；它们的代码生成步骤相同，只是网络和 TokenStore 适配方式不同。
 
+## 使用 AI 接入
+
+仓库提供 [`xapiforge-integration` Skill](./.agents/skills/xapiforge-integration/SKILL.md)，帮助 AI 先识别接入项目，再完成依赖选择、客户端生成、鉴权连接和验证。安装与调用方式见[使用 AI 接入](./docs/getting-started/ai-integration.md)。
+
 ## 示例项目
 
 `examples/demo-app` 是 Vue 3 示例，同时承载浏览器回归场景：

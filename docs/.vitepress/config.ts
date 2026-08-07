@@ -62,6 +62,7 @@ export default withMermaid(
             text: "接入指南",
             items: [
               { text: "选择接入方式", link: "/getting-started/" },
+              { text: "使用 AI 接入", link: "/getting-started/ai-integration" },
               { text: "浏览器应用接入", link: "/getting-started/browser" },
               { text: "Ionic / Capacitor 接入", link: "/getting-started/ionic-capacitor" },
               { text: "React Native 接入", link: "/getting-started/react-native" },

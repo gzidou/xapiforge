@@ -8,6 +8,8 @@ xapiforge 的代码生成方式在各运行环境中相同。真正不同的是 
 | Ionic / Capacitor         | `@xapiforge/adapter-capacitor`    | [Ionic / Capacitor 接入](./ionic-capacitor.md) |
 | React Native              | `@xapiforge/adapter-react-native` | [React Native 接入](./react-native.md)         |
 
+使用 AI 编程工具接入时，可以安装仓库提供的 `xapiforge-integration` Skill。安装和调用方法见[使用 AI 接入](./ai-integration.md)。Skill 会先识别接入项目，不会替你猜测 OpenAPI 地址或认证协议。
+
 ## 所有项目都要完成的四件事
 
 1. 安装 `@xapiforge/core`、`@xapiforge/genapi` 和一个运行时 adapter。

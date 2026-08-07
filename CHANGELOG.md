@@ -5,6 +5,7 @@ All notable changes to xapiforge are documented here.
 ## Unreleased
 
 - Added clear entry points for first-time integrators and maintainers.
+- Added the `xapiforge-integration` Skill for AI-assisted consumer inspection, integration, and evidence-based verification.
 - Corrected Capacitor and React Native dependency and initialization guidance.
 - Added package, scenario, native download, and documentation checks to the standard verification gate and CI.
 - Added a shared version command and partial-publish recovery support for maintainers.

@@ -17,6 +17,7 @@ export default tseslint.config(
       "tmp/**",
       "examples/*/src/api/**",
       "coverage/**",
+      ".agents/**", // portable AI skills are validated and executed independently
       "eslint.config.mjs",
       "**/*.d.ts",
       "**/*.js",

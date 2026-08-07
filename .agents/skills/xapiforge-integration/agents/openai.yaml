@@ -1,0 +1,4 @@
+interface:
+  display_name: "xapiforge Integration"
+  short_description: "用 AI 检查项目并完成 xapiforge 接入、生成与验证"
+  default_prompt: "使用 $xapiforge-integration 检查当前项目并完成可验证的 xapiforge 接入。"
