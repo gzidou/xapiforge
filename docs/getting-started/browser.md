@@ -38,7 +38,7 @@ export default defineConfig({
   defaultPath: "/swagger/v1/swagger.json",
   timeoutMs: 15_000,
   outputDir: "swagger",
-  genOutputDir: "src/api",
+  genOutputDir: "src/api/gen",
   mode: "online",
   projects: [
     {
@@ -50,6 +50,8 @@ export default defineConfig({
   ]
 });
 ```
+
+`genOutputDir` 可以省略，默认值是 `src/api/gen`。旧项目如果显式配置了 `src/api`，升级后仍会继续生成到旧目录；迁移时需要同时修改该字段和业务代码中的生成客户端导入路径，确认构建通过后再清理旧产物。
 
 字段说明：
 
@@ -97,7 +99,7 @@ pnpm generate:api myapp
 生成结果：
 
 ```text
-src/api/myapp/
+src/api/gen/myapp/
 ├── index.ts
 ├── api-types.ts
 └── types/
@@ -113,7 +115,7 @@ src/api/myapp/
 ```typescript
 import { AuthService } from "@xapiforge/core";
 import { localStorageStore } from "@xapiforge/adapter-browser";
-import { createMyappClient } from "./api/myapp/index.js";
+import { createMyappClient } from "./api/gen/myapp/index.js";
 
 const BASE_URL = "http://localhost:7001";
 

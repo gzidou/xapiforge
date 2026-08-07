@@ -4,6 +4,9 @@ All notable changes to xapiforge are documented here.
 
 ## Unreleased
 
+- Changed the genapi default output directory from `src/api` to `src/api/gen`; explicit `genOutputDir` and `--outputDir` overrides remain supported.
+- Fixed workspace config loading so the demo can use `defineConfig` without resolving the package's TypeScript source at CLI runtime.
+- Made demo download, generation, development, type checking, and production builds prepare genapi and regenerate the ignored offline API client automatically.
 - Added clear entry points for first-time integrators and maintainers.
 - Added the `xapiforge-integration` Skill for AI-assisted consumer inspection, integration, and evidence-based verification.
 - Corrected Capacitor and React Native dependency and initialization guidance.

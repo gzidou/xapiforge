@@ -324,7 +324,7 @@ C# `[Flags] enum Permission { Read=1, Write=2, Execute=4 }`，后端可能返回
 ### 6.1 代码里引用常量（替代魔法数字）
 
 ```ts
-import { ExampleSampleState } from "@/api/demo/types/monitor";
+import { ExampleSampleState } from "@/api/gen/demo/types/monitor";
 
 api.PUT("/api/monitor/config", {
   body: { background: ExampleSampleState.Alpha } // = 1
@@ -334,7 +334,7 @@ api.PUT("/api/monitor/config", {
 ### 6.2 反查 label（详情页展示）
 
 ```ts
-import { ExampleSampleStateLabels } from "@/api/demo/types/monitor";
+import { ExampleSampleStateLabels } from "@/api/gen/demo/types/monitor";
 
 const label = ExampleSampleStateLabels[row.background]; // "选项一"
 ```
@@ -342,7 +342,7 @@ const label = ExampleSampleStateLabels[row.background]; // "选项一"
 或用带兜底的工具函数（后端响应值超出已知范围时不报错）：
 
 ```ts
-import { getExampleSampleStateLabel } from "@/api/demo/types/monitor";
+import { getExampleSampleStateLabel } from "@/api/gen/demo/types/monitor";
 
 const label = getExampleSampleStateLabel(row.background); // "选项一" 或 "未知"
 ```
@@ -350,7 +350,7 @@ const label = getExampleSampleStateLabel(row.background); // "选项一" 或 "�
 ### 6.3 下拉框 options
 
 ```ts
-import { ExampleSampleState, ExampleSampleStateLabels } from "@/api/demo/types/monitor";
+import { ExampleSampleState, ExampleSampleStateLabels } from "@/api/gen/demo/types/monitor";
 
 const options = Object.entries(ExampleSampleState).map(([name, value]) => ({
   value,
@@ -362,7 +362,7 @@ const options = Object.entries(ExampleSampleState).map(([name, value]) => ({
 ### 6.4 表单 Select 选了 label 要拿 value 发请求
 
 ```ts
-import { ExampleSampleStateByLabel } from "@/api/demo/types/monitor";
+import { ExampleSampleStateByLabel } from "@/api/gen/demo/types/monitor";
 
 // 用户在下拉框选了「选项一」
 const selectedLabel = "选项一";
@@ -376,7 +376,7 @@ api.POST("/api/monitor/config", { body: { background: value } });
 import {
   ExampleSampleStateColors,
   ExampleSampleStateIcon,
-} from "@/api/demo/types/monitor";
+} from "@/api/gen/demo/types/monitor";
 
 // 渲染标签
 <Tag color={ExampleSampleStateColors[row.background]}>
@@ -390,7 +390,7 @@ import {
 后端新增了枚举值 `3` 但前端 swagger 没更新，直接用 `Labels[3]` 会拿到 `undefined`：
 
 ```ts
-import { getExampleSampleStateLabel } from "@/api/demo/types/monitor";
+import { getExampleSampleStateLabel } from "@/api/gen/demo/types/monitor";
 
 const label = getExampleSampleStateLabel(3); // "未知"（不报错）
 ```
@@ -402,7 +402,7 @@ const label = getExampleSampleStateLabel(3); // "未知"（不报错）
 ```ts
 // middleware/enum-coerce.ts
 import type { Middleware } from "@xapiforge/core";
-import { ExampleSampleStateSerialize } from "@/api/demo/types/monitor";
+import { ExampleSampleStateSerialize } from "@/api/gen/demo/types/monitor";
 
 export const enumSerializeMiddleware: Middleware = {
   async onRequest({ request }) {

@@ -390,7 +390,7 @@ export function createHttpErrorMiddleware(config?: {
 import { createNet, AuthService, HttpClient, createAuthMiddleware } from "@xapiforge/core";
 import { localStorageStore } from "@xapiforge/adapter-browser";
 import { createAbpUnwrapMw } from "@xapiforge/core-mw-abp"; // 假设的官方 middleware 包
-import type { paths as AppPaths } from "./api/demo/types/base.js";
+import type { paths as AppPaths } from "./api/gen/demo/types/base.js";
 
 // 1. HttpClient（给 AuthApi 用，不走 middleware 链）
 const http = new HttpClient({ baseURL: "http://localhost:8787" });
@@ -598,7 +598,7 @@ try {
 | `examples/demo-app/src/main.ts`             | 重写：HttpClient + AuthService + createNet       |
 | `examples/demo-app/src/AuthApi.ts`          | 重写：用 HttpClient 裸调                         |
 | `examples/demo-app/src/components/Home.vue` | 改 catch 模式（AbpBizError）                     |
-| `examples/demo-app/src/api/`                | genapi 产物不变（openapi-fetch client 仍可用）   |
+| `examples/demo-app/src/api/gen/`            | genapi 产物（openapi-fetch client）              |
 | `examples/react-app/` 等其他 example        | 同步改造（占位 examples 已删，接入新项目时新建） |
 | `examples/mock-server/`                     | 可能加新协议端点（企业微信 / GraphQL 等）        |
 

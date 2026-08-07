@@ -5,10 +5,15 @@
   "type": "module",
   "description": "验证项目 — Vue 3 + @xapiforge/core + @xapiforge/genapi 全链路接入示例",
   "scripts": {
+    "predev": "pnpm generate:api",
     "dev": "vite",
+    "prebuild": "pnpm generate:api",
     "build": "vue-tsc --noEmit && vite build",
+    "pretypecheck": "pnpm generate:api",
     "typecheck": "vue-tsc --noEmit",
+    "predownload-swagger": "pnpm --filter '@xapiforge/genapi' build",
     "download-swagger": "xapiforge-fetch",
+    "pregenerate:api": "pnpm --filter '@xapiforge/genapi' build",
     "generate:api": "xapiforge demo"
   },
   "dependencies": {

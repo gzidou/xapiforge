@@ -37,7 +37,7 @@ pnpm exec cap sync
 // src/api-client.ts
 import { preferencesStore } from "@xapiforge/adapter-capacitor";
 import { AuthService } from "@xapiforge/core";
-import { createMyappClient } from "./api/myapp/index.js";
+import { createMyappClient } from "./api/gen/myapp/index.js";
 
 const accessTokenStore = preferencesStore("myapp_access_token");
 

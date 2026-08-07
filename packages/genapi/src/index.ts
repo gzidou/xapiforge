@@ -23,9 +23,9 @@
  *     projectId: "demo",
  *     xapiForgeConfig,
  *     swaggerDir: "swagger",
- *     outputDir: "src/api",
+ *     outputDir: "src/api/gen",
  *   });
- *   // → 产出 src/api/demo/index.ts + src/api/demo/types/<svc>.ts + src/api/demo/api-types.ts
+ *   // → 产出 src/api/gen/demo/index.ts + src/api/gen/demo/types/<svc>.ts + src/api/gen/demo/api-types.ts
  */
 
 import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
@@ -76,7 +76,7 @@ export interface ProjectConfig {
  *
  * 例：{ match: 'Example.Module.', namespace: 'Module' }
  *   → schema 'Example.Module.ItemDto' 归入 namespace Module，内部 alias = 'ItemDto'
- *   → import type { Module } from '@/api/generated/api-types'
+ *   → import type { Module } from '@/api/gen/demo/api-types'
  *   → Module.ItemDto
  *
  * 通用机制：纯字符串前缀匹配，不限定后端框架（ABP / SpringBoot / NestJS 等均可）。
@@ -92,6 +92,7 @@ export interface XApiForgeConfig {
   defaultPath: string;
   timeoutMs: number;
   outputDir: string;
+  /** 生成产物根目录；CLI 默认使用 `src/api/gen`。 */
   genOutputDir?: string;
   mode?: "online" | "offline";
   projects: ProjectConfig[];
@@ -113,7 +114,7 @@ export interface XApiForgeConfig {
    *
    * 例：{ match: 'Example.Module.', namespace: 'Module' }
    *   → 'Example.Module.ItemDto' 归入 namespace Module
-   *   → 业务侧：import type { Module } from '@/api/generated/api-types'
+   *   → 业务侧：import type { Module } from '@/api/gen/demo/api-types'
    *            然后 Module.ItemDto
    */
   namespacePrefixAliases?: NamespacePrefixAlias[];
@@ -454,7 +455,9 @@ function renderIndex(
   parts.push(" *   - retry loop（429 退避 / auth retry）由 createNet 统一管理");
   parts.push(" *");
   parts.push(" * 用法：");
-  parts.push(` *   import { create${cap(projectId)}Client } from "./api/${projectId}/index.js";`);
+  parts.push(
+    ` *   import { create${cap(projectId)}Client } from "./api/gen/${projectId}/index.js";`,
+  );
   parts.push(` *   const api = create${cap(projectId)}Client({`);
   parts.push(` *     baseURL: "${projectBaseHost}",`);
   parts.push(" *     authService,           // AuthService 实例");
@@ -580,7 +583,7 @@ function renderIndex(
  *   - 同 service + 同 full 名重复出现 → 只导一次
  *
  * 业务侧：
- *   import type { IdentityUserDto, IdentityUserCreateDto } from "@/api/demo/api-types";
+ *   import type { IdentityUserDto, IdentityUserCreateDto } from "@/api/gen/demo/api-types";
  *   type Resp = paths["/api/identity/users/{id}"]["get"]["responses"]["200"]["content"]["application/json"];
  *   // 或直接：
  *   type Resp2 = IdentityUserDto;

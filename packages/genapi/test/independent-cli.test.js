@@ -38,7 +38,6 @@ test("CLI generates types without consumer-level dependency binaries", async () 
         defaultPath: "/swagger/v1/swagger.json",
         timeoutMs: 15000,
         outputDir: "swagger",
-        genOutputDir: "src/api",
         mode: "offline",
         projects: [{
           name: "demo",
@@ -94,7 +93,7 @@ test("CLI generates types without consumer-level dependency binaries", async () 
 
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     const generated = await readFile(
-      join(consumerDir, "src", "api", "demo", "types", "base.ts"),
+      join(consumerDir, "src", "api", "gen", "demo", "types", "base.ts"),
       "utf8",
     );
     assert.match(generated, /"\/api\/ping"/);

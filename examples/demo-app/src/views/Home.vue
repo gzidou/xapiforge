@@ -8,7 +8,7 @@ import type {
   UserCreateDto,
   UserDto,
   UserUpdateDto,
-} from "../api/demo/api-types.js";
+} from "../api/gen/demo/api-types.js";
 import { unwrapAbpPaged, type PagedList } from "../utils/paged.js";
 import { localStorageStore } from "@xapiforge/adapter-browser";
 import { useApi } from "../api/index.js";
@@ -38,7 +38,7 @@ import { useApi } from "../api/index.js";
  *        返回 FileEntityDto
  *
  * 类型推导：
- *   import type { UserDto } from "../api/demo/api-types.js";
+ *   import type { UserDto } from "../api/gen/demo/api-types.js";
  *   // ↑ 自动从 components.schemas 导出的 alias，字段拼错立刻报错
  *
  *   await api.base.GET("/api/identity/users/{id}", { params: { path: { id } } });
@@ -375,7 +375,7 @@ onMounted(() => {
     </header>
 
     <p class="hint">
-      生成产物 <code>src/api/demo/</code>。<br />
+      生成产物 <code>src/api/gen/demo/</code>。<br />
       入口：<code>api.&lt;service&gt;.GET/POST/PUT/DELETE(path, &#123; params: ... &#125;)</code> ——
       所有 method/path/参数全强类型。<br />
       接收返回值使用当前离线 Swagger 生成的 <code>UserDto</code>、<code>RoleDto</code> 和

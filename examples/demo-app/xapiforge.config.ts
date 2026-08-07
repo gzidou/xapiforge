@@ -2,7 +2,7 @@
  * Demo project swagger config.
  *
  * Run `pnpm download-swagger` (offline mode = no-op, snapshot included).
- * Run `pnpm generate:api demo` to generate TS API client into src/api/demo/.
+ * Run `pnpm generate:api demo` to generate TS API client into src/api/gen/demo/.
  */
 
 import { defineConfig } from "@xapiforge/genapi";
@@ -11,7 +11,7 @@ export default defineConfig({
   defaultPath: "/swagger/v1/swagger.json",
   timeoutMs: 15_000,
   outputDir: "swagger",
-  genOutputDir: "src/api",
+  genOutputDir: "src/api/gen",
   // offline: skip download, swagger/demo/*.json already included in repo
   mode: "offline",
   projects: [

@@ -61,10 +61,10 @@ Expected offline input:
 <outputDir>/<project-name>/<service-name>.json
 ```
 
-Expected generated output with `genOutputDir: "src/api"`:
+Expected generated output with the default `genOutputDir: "src/api/gen"`:
 
 ```text
-src/api/<project-name>/
+src/api/gen/<project-name>/
 ├── index.ts
 ├── api-types.ts
 └── types/

@@ -20,8 +20,8 @@
 
 import { createNet, HttpClient } from "@xapiforge/core";
 import type { AuthService, Middleware, FetchLike } from "@xapiforge/core";
-import type { ApiDemo } from "./demo/index.js";
-import { createDemoClient } from "./demo/index.js";
+import type { ApiDemo } from "./gen/demo/index.js";
+import { createDemoClient } from "./gen/demo/index.js";
 
 export type { ApiDemo };
 

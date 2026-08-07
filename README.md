@@ -40,7 +40,7 @@ export default defineConfig({
   defaultPath: "/swagger/v1/swagger.json",
   timeoutMs: 15_000,
   outputDir: "swagger",
-  genOutputDir: "src/api",
+  genOutputDir: "src/api/gen",
   mode: "online",
   projects: [
     {

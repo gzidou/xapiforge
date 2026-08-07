@@ -15,7 +15,7 @@
  *
  * CLI 默认读 cwd 下的 xapiforge.config.ts，调 generate() 输出。
  * - swaggerDir 默认 "swagger"
- * - outputDir  默认 "src/api"
+ * - outputDir  默认 "src/api/gen"
  * - projectId  从 CLI 参数取（必填）；all 表示全部生成
  */
 
@@ -23,7 +23,21 @@ import { generate, type XApiForgeConfig } from "./index.js";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { build } from "esbuild";
+import { build, type Plugin } from "esbuild";
+
+const configApiPlugin: Plugin = {
+  name: "xapiforge-config-api",
+  setup(buildContext) {
+    buildContext.onResolve({ filter: /^@xapiforge\/genapi$/ }, () => ({
+      path: "config-api",
+      namespace: "xapiforge",
+    }));
+    buildContext.onLoad({ filter: /.*/, namespace: "xapiforge" }, () => ({
+      contents: "export const defineConfig = (config) => config;",
+      loader: "js",
+    }));
+  },
+};
 
 /**
  * 加载业务项目的 xapiforge.config。
@@ -38,6 +52,7 @@ async function loadConfig(cwd: string): Promise<XApiForgeConfig> {
       entryPoints: [tsPath],
       bundle: true,
       packages: "external",
+      plugins: [configApiPlugin],
       format: "esm",
       platform: "node",
       write: false, // 输出到内存
@@ -88,7 +103,7 @@ function printHelp(): void {
       "",
       "Options:",
       "  --swaggerDir <dir>    swagger.json 根目录（默认从 xapiforge.config.ts.outputDir 读）",
-      "  --outputDir <dir>     生成产物根目录（默认从 xapiforge.config.ts.genOutputDir 读，否则 'src/api'）",
+      "  --outputDir <dir>     生成产物根目录（默认从 xapiforge.config.ts.genOutputDir 读，否则 'src/api/gen'）",
       "  --no-types            跳过 api-types.ts（业务侧调试时用，默认生成）",
       "  -h, --help            显示帮助",
     ].join("\n"),
@@ -98,7 +113,7 @@ function printHelp(): void {
 interface ParsedCli {
   arg: string;
   swaggerDir: string;
-  /** 未被 --outputDir 覆盖时是空字符串（fallback 用 config.genOutputDir ?? "src/api"） */
+  /** 未被 --outputDir 覆盖时是空字符串（fallback 用 config.genOutputDir ?? "src/api/gen"） */
   outputDir: string;
   noTypes: boolean;
   help: boolean;
@@ -147,9 +162,9 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  // 输出目录解析顺序：CLI --outputDir > xapiforge.config.ts genOutputDir > "src/api"
+  // 输出目录解析顺序：CLI --outputDir > xapiforge.config.ts genOutputDir > "src/api/gen"
   // swaggerDir 同理（CLI > config.outputDir > "swagger"）
-  const outputDir = cli.outputDir || config.genOutputDir || "src/api";
+  const outputDir = cli.outputDir || config.genOutputDir || "src/api/gen";
   const swaggerDir = cli.swaggerDir || config.outputDir;
 
   let totalFiles = 0;

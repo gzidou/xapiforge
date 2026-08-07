@@ -33,7 +33,7 @@ export default defineConfig({
   defaultPath: "/swagger/v1/swagger.json",
   timeoutMs: 15_000,
   outputDir: "swagger",
-  genOutputDir: "src/api",
+  genOutputDir: "src/api/gen",
   projects: [
     {
       name: "myapp",
@@ -44,6 +44,8 @@ export default defineConfig({
   ]
 });
 ```
+
+`genOutputDir` is optional and defaults to `src/api/gen`. Existing explicit output directories continue to work.
 
 ## Generate
 

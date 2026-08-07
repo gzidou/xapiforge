@@ -28,7 +28,7 @@ pnpm add -D @xapiforge/genapi
 // src/api-client.ts
 import { keychainStore } from "@xapiforge/adapter-react-native";
 import { AuthService } from "@xapiforge/core";
-import { createMyappClient } from "./api/myapp/index.js";
+import { createMyappClient } from "./api/gen/myapp/index.js";
 
 const BASE_URL = "https://api.example.com";
 const accessTokenStore = keychainStore({ service: "myapp.access-token" });
