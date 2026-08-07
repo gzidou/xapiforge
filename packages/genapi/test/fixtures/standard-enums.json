@@ -1,0 +1,61 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Standard enum fixture",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/device": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Fixture.Device"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Fixture.Device": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "$ref": "#/components/schemas/Fixture.DeviceState"
+          },
+          "status": {
+            "$ref": "#/components/schemas/Fixture.TaskStatus"
+          },
+          "permissions": {
+            "$ref": "#/components/schemas/Fixture.AccessMode"
+          }
+        }
+      },
+      "Fixture.DeviceState": {
+        "type": "integer",
+        "enum": [0, 1],
+        "x-enum-varnames": ["Offline", "Online"],
+        "x-enum-labels": ["Offline device", "Online device"]
+      },
+      "Fixture.TaskStatus": {
+        "type": "string",
+        "enum": ["pending", "running"],
+        "x-enum-varnames": ["Pending", "Running"],
+        "x-enum-labels": ["Pending task", "Running task"]
+      },
+      "Fixture.AccessMode": {
+        "type": "integer",
+        "enum": [1, 2, 4],
+        "x-enum-varnames": ["Read", "Write", "Execute"],
+        "x-enum-labels": ["Read access", "Write access", "Execute access"]
+      }
+    }
+  }
+}

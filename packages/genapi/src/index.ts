@@ -202,6 +202,9 @@ export interface GenapiHooks {
   transformTypes?: TransformTypesHook;
 }
 
+export { createRuntimeEnumHooks } from "./runtime-enum.js";
+export type { RuntimeEnumHooksOptions, RuntimeEnumMetadata } from "./runtime-enum.js";
+
 // ---------- generator 输入 ----------
 
 export interface GenerateOptions {

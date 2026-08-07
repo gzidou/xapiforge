@@ -4,5 +4,5 @@
     "jsx": "preserve",
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "src/**/*.vue", "xapiforge.config.ts"]
+  "include": ["src/**/*.ts", "src/**/*.vue", "hooks/**/*.ts", "xapiforge.config.ts"]
 }
