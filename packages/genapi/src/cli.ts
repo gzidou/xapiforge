@@ -19,7 +19,7 @@
  * - projectId  从 CLI 参数取（必填）；all 表示全部生成
  */
 
-import { generate, type XApiForgeConfig } from "./index.js";
+import { generate, validateConfig, type XApiForgeConfig } from "./index.js";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -146,6 +146,7 @@ async function main(): Promise<void> {
     process.exit(2);
   }
   const config = await loadConfig(process.cwd());
+  validateConfig(config);
 
   if (cli.arg === "list") {
     console.log("xapiForgeConfig.projects:");

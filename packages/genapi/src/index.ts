@@ -28,13 +28,10 @@
  *   // → 产出 src/api/gen/demo/index.ts + src/api/gen/demo/types/<svc>.ts + src/api/gen/demo/api-types.ts
  */
 
-import { readFile, writeFile, mkdir, rm } from "node:fs/promises";
-import { readFileSync, existsSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { tmpdir } from "node:os";
-import { randomBytes } from "node:crypto";
-import { pathToFileURL } from "node:url";
-import openapiTS, { astToString } from "openapi-typescript";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import openapiTS, { astToString, type OpenAPI3 } from "openapi-typescript";
 
 // ---------- 语义类型 ----------
 
@@ -66,6 +63,8 @@ export interface ProjectConfig {
   displayName: string;
   baseHost: string;
   services: ServiceConfig[];
+  /** project 级 hooks（service 未显式配置时优先于 root hooks）。 */
+  hooks?: GenapiHooks;
 }
 
 /**
@@ -138,8 +137,12 @@ export interface GenapiHookContext {
   serviceName: string;
   /** 原 swagger 文件绝对路径（hooks 仅读，不修改原文件） */
   swaggerPath: string;
-  /** 类型产物绝对路径 types/<svc>.ts */
+  /** 类型产物的逻辑最终路径；hook 执行时文件不保证已经存在。 */
   typesPath: string;
+  /** hook 前的原始 OpenAPI 文档。 */
+  originalDocument?: unknown;
+  /** transformSwagger 后、供所有后续步骤复用的 OpenAPI 文档。 */
+  normalizedDocument?: unknown;
 }
 
 /**
@@ -150,7 +153,7 @@ export interface GenapiHookContext {
  * `enum: [1] + x-enum-varnames: ["Alpha"] + x-enum-labels: ["选项一"]`，
  * 让 openapi-typescript 能正确生成 `1 | 2` 数字 union 类型。
  *
- * 返回值会被 genapi 写入临时文件交给 openapi-typescript，**不改原 swagger.json**。
+ * 返回值会直接交给 openapi-typescript，**不改原 swagger.json**。
  */
 export type TransformSwaggerHook = (swagger: unknown, ctx: GenapiHookContext) => Promise<unknown>;
 
@@ -205,6 +208,320 @@ interface ServiceInfo {
   endpointCount: number;
 }
 
+interface ServiceModel {
+  config: ServiceConfig;
+  originalDocument: OpenAPI3;
+  document: OpenAPI3;
+  schemas: Readonly<Record<string, unknown>>;
+  serviceInfo: ServiceInfo;
+  hooks?: GenapiHooks;
+  hookContext: GenapiHookContext;
+}
+
+const CONFIG_ID_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+const TYPESCRIPT_IDENTIFIER_PATTERN = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+const TYPESCRIPT_RESERVED_WORDS = new Set([
+  "break",
+  "case",
+  "catch",
+  "class",
+  "const",
+  "continue",
+  "debugger",
+  "default",
+  "delete",
+  "do",
+  "else",
+  "enum",
+  "export",
+  "extends",
+  "false",
+  "finally",
+  "for",
+  "function",
+  "if",
+  "import",
+  "in",
+  "instanceof",
+  "new",
+  "null",
+  "return",
+  "super",
+  "switch",
+  "this",
+  "throw",
+  "true",
+  "try",
+  "typeof",
+  "var",
+  "void",
+  "while",
+  "with",
+  "yield",
+]);
+const HTTP_METHODS = new Set(["get", "put", "post", "delete", "options", "head", "patch", "trace"]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function configError(message: string): Error {
+  return new Error(`[genapi] 配置错误：${message}`);
+}
+
+function assertNonEmptyString(value: unknown, path: string): asserts value is string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw configError(`${path} 必须是非空字符串`);
+  }
+}
+
+function assertConfigId(value: unknown, path: string): asserts value is string {
+  assertNonEmptyString(value, path);
+  if (!CONFIG_ID_PATTERN.test(value)) {
+    throw configError(`${path} 必须匹配 ${CONFIG_ID_PATTERN.source}，实际为 "${value}"`);
+  }
+}
+
+function assertTypeScriptIdentifier(value: unknown, path: string): asserts value is string {
+  assertNonEmptyString(value, path);
+  if (!TYPESCRIPT_IDENTIFIER_PATTERN.test(value) || TYPESCRIPT_RESERVED_WORDS.has(value)) {
+    throw configError(`${path} 必须是非保留的 TypeScript 标识符，实际为 "${value}"`);
+  }
+}
+
+function validateHooks(value: unknown, path: string): void {
+  if (value === undefined) return;
+  if (!isRecord(value)) throw configError(`${path} 必须是对象`);
+  for (const key of ["transformSwagger", "transformTypes"] as const) {
+    const hook = value[key];
+    if (hook !== undefined && typeof hook !== "function") {
+      throw configError(`${path}.${key} 必须是函数`);
+    }
+  }
+}
+
+/** 在 CLI 或 programmatic generate 写文件前执行完整运行时配置校验。 */
+export function validateConfig(config: XApiForgeConfig): void {
+  if (!isRecord(config)) throw configError("根配置必须是对象");
+  assertNonEmptyString(config.defaultPath, "defaultPath");
+  assertNonEmptyString(config.outputDir, "outputDir");
+  if (config.genOutputDir !== undefined) {
+    assertNonEmptyString(config.genOutputDir, "genOutputDir");
+  }
+  if (!Number.isFinite(config.timeoutMs) || config.timeoutMs <= 0) {
+    throw configError("timeoutMs 必须是大于 0 的有限数字");
+  }
+  if (config.mode !== undefined && config.mode !== "online" && config.mode !== "offline") {
+    throw configError(`mode 只能是 "online" 或 "offline"，实际为 "${String(config.mode)}"`);
+  }
+  validateHooks(config.hooks, "hooks");
+
+  if (!Array.isArray(config.projects)) throw configError("projects 必须是数组");
+  const projectIds = new Set<string>();
+  const projectTypeNames = new Map<string, string>();
+  for (const [projectIndex, project] of config.projects.entries()) {
+    const projectPath = `projects[${projectIndex}]`;
+    if (!isRecord(project)) throw configError(`${projectPath} 必须是对象`);
+    assertConfigId(project.name, `${projectPath}.name`);
+    assertNonEmptyString(project.displayName, `${projectPath}.displayName`);
+    assertNonEmptyString(project.baseHost, `${projectPath}.baseHost`);
+    validateHooks(project.hooks, `${projectPath}.hooks`);
+
+    if (projectIds.has(project.name)) {
+      throw configError(`project ID 重复："${project.name}"`);
+    }
+    projectIds.add(project.name);
+    const projectTypeName = cap(project.name);
+    const previousProjectId = projectTypeNames.get(projectTypeName);
+    if (previousProjectId) {
+      throw configError(
+        `project "${previousProjectId}" 与 "${project.name}" 生成相同 TypeScript 名称 "${projectTypeName}"`,
+      );
+    }
+    projectTypeNames.set(projectTypeName, project.name);
+
+    if (!Array.isArray(project.services) || project.services.length === 0) {
+      throw configError(`${projectPath}.services 必须是非空数组`);
+    }
+    const serviceIds = new Set<string>();
+    const serviceTypeNames = new Map<string, string>();
+    const runtimeKeys = new Map<string, string>();
+    for (const [serviceIndex, service] of project.services.entries()) {
+      const servicePath = `${projectPath}.services[${serviceIndex}]`;
+      if (!isRecord(service)) throw configError(`${servicePath} 必须是对象`);
+      assertConfigId(service.name, `${servicePath}.name`);
+      assertNonEmptyString(service.displayName, `${servicePath}.displayName`);
+      if (!Number.isInteger(service.port) || service.port < 1 || service.port > 65_535) {
+        throw configError(`${servicePath}.port 必须是 1 到 65535 的整数`);
+      }
+      if (service.path !== undefined) assertNonEmptyString(service.path, `${servicePath}.path`);
+      if (service.baseHost !== undefined) {
+        assertNonEmptyString(service.baseHost, `${servicePath}.baseHost`);
+      }
+      validateHooks(service.hooks, `${servicePath}.hooks`);
+
+      if (serviceIds.has(service.name)) {
+        throw configError(`${projectPath} 下 service ID 重复："${service.name}"`);
+      }
+      serviceIds.add(service.name);
+
+      const serviceTypeName = cap(service.name);
+      const previousTypeId = serviceTypeNames.get(serviceTypeName);
+      if (previousTypeId) {
+        throw configError(
+          `${projectPath} 下 service "${previousTypeId}" 与 "${service.name}" 生成相同 TypeScript 名称 "${serviceTypeName}"`,
+        );
+      }
+      serviceTypeNames.set(serviceTypeName, service.name);
+
+      const runtimeKey = safeKey(service.name);
+      const previousRuntimeId = runtimeKeys.get(runtimeKey);
+      if (previousRuntimeId) {
+        throw configError(
+          `${projectPath} 下 service "${previousRuntimeId}" 与 "${service.name}" 生成相同 runtime key "${runtimeKey}"`,
+        );
+      }
+      runtimeKeys.set(runtimeKey, service.name);
+    }
+  }
+
+  if (config.namespacePrefixAliases !== undefined) {
+    if (!Array.isArray(config.namespacePrefixAliases)) {
+      throw configError("namespacePrefixAliases 必须是数组");
+    }
+    const matches = new Map<string, string>();
+    const namespaces = new Map<string, string>();
+    for (const [index, alias] of config.namespacePrefixAliases.entries()) {
+      const aliasPath = `namespacePrefixAliases[${index}]`;
+      if (!isRecord(alias)) throw configError(`${aliasPath} 必须是对象`);
+      assertNonEmptyString(alias.match, `${aliasPath}.match`);
+      assertTypeScriptIdentifier(alias.namespace, `${aliasPath}.namespace`);
+      const previousNamespace = matches.get(alias.match);
+      if (previousNamespace) {
+        throw configError(
+          `${aliasPath}.match "${alias.match}" 已映射到 namespace "${previousNamespace}"`,
+        );
+      }
+      matches.set(alias.match, alias.namespace);
+      const previousMatch = namespaces.get(alias.namespace);
+      if (previousMatch) {
+        throw configError(
+          `namespace "${alias.namespace}" 同时匹配 "${previousMatch}" 和 "${alias.match}"`,
+        );
+      }
+      namespaces.set(alias.namespace, alias.match);
+    }
+  }
+}
+
+function assertOpenApiDocument(value: unknown, label: string): asserts value is OpenAPI3 {
+  if (!isRecord(value)) throw new Error(`[genapi] ${label} 必须是 JSON 对象`);
+  if (typeof value.openapi !== "string" || !/^3\.\d+(?:\.\d+)?(?:[-+].*)?$/.test(value.openapi)) {
+    throw new Error(`[genapi] ${label} 必须声明 OpenAPI 3.x，实际为 "${String(value.openapi)}"`);
+  }
+  if (!isRecord(value.info)) throw new Error(`[genapi] ${label}.info 必须是对象`);
+  if (!isRecord(value.paths)) throw new Error(`[genapi] ${label}.paths 必须是对象`);
+  if (value.components !== undefined && !isRecord(value.components)) {
+    throw new Error(`[genapi] ${label}.components 必须是对象`);
+  }
+}
+
+function assertInternalReferencesOnly(document: OpenAPI3, label: string): void {
+  const pending: unknown[] = [document];
+  const visited = new Set<object>();
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (typeof current !== "object" || current === null || visited.has(current)) continue;
+    visited.add(current);
+    if (Array.isArray(current)) {
+      for (const item of current as unknown[]) pending.push(item);
+      continue;
+    }
+    for (const [key, value] of Object.entries(current)) {
+      if (key === "$ref" && typeof value === "string" && !value.startsWith("#")) {
+        throw new Error(`[genapi] ${label} 暂不支持外部 $ref："${value}"`);
+      }
+      pending.push(value);
+    }
+  }
+}
+
+function resolveHooks(
+  service: ServiceConfig,
+  project: ProjectConfig,
+  rootHooks: GenapiHooks | undefined,
+): GenapiHooks | undefined {
+  if (service.hooks !== undefined) return service.hooks;
+  if (project.hooks !== undefined) return project.hooks;
+  return rootHooks;
+}
+
+async function loadServiceModels(
+  project: ProjectConfig,
+  swaggerDir: string,
+  outDir: string,
+  rootHooks: GenapiHooks | undefined,
+): Promise<ServiceModel[]> {
+  const models: ServiceModel[] = [];
+  for (const service of project.services) {
+    const swaggerFile = join(swaggerDir, `${service.name}.json`);
+    if (!existsSync(swaggerFile)) {
+      throw new Error(`[genapi] required Swagger 缺失：${swaggerFile}`);
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await readFile(swaggerFile, "utf8"));
+    } catch (cause) {
+      throw new Error(`[genapi] 无法解析 ${swaggerFile}`, { cause });
+    }
+    assertOpenApiDocument(parsed, `${project.name}/${service.name} 原始文档`);
+    const originalDocument = parsed;
+    const hooks = resolveHooks(service, project, rootHooks);
+    const hookContext: GenapiHookContext = {
+      projectId: project.name,
+      serviceName: service.name,
+      swaggerPath: swaggerFile,
+      typesPath: join(outDir, "types", `${service.name}.ts`),
+      originalDocument,
+    };
+    const hookInput = structuredClone(originalDocument);
+    const transformed = hooks?.transformSwagger
+      ? await hooks.transformSwagger(hookInput, hookContext)
+      : hookInput;
+    if (transformed === undefined || transformed === null) {
+      throw new Error(
+        `[genapi] transformSwagger(${project.name}/${service.name}) 返回空值；应返回规范化后的 OpenAPI 对象`,
+      );
+    }
+    assertOpenApiDocument(transformed, `${project.name}/${service.name} 规范化文档`);
+    assertInternalReferencesOnly(transformed, `${project.name}/${service.name}`);
+    hookContext.normalizedDocument = transformed;
+    const tagMap = extractTags(transformed);
+    const endpointCount = Object.values(tagMap).reduce(
+      (count, operations) => count + operations.length,
+      0,
+    );
+    const components = transformed.components as { schemas?: Record<string, unknown> } | undefined;
+    models.push({
+      config: service,
+      originalDocument,
+      document: transformed,
+      schemas: components?.schemas ?? {},
+      serviceInfo: { name: service.name, tagMap, endpointCount },
+      hooks,
+      hookContext,
+    });
+  }
+  return models;
+}
+
+function assertPathInside(root: string, target: string, label: string): void {
+  const relativePath = relative(root, target);
+  if (relativePath === "" || (!relativePath.startsWith("..") && !isAbsolute(relativePath))) return;
+  throw new Error(`[genapi] ${label} 越过配置根目录：${target}`);
+}
+
 // ---------- 入口 ----------
 
 /**
@@ -216,88 +533,46 @@ interface ServiceInfo {
  * 4. 写 src/api-types.ts（按 components.schemas 导 alias）
  */
 export async function generate(opts: GenerateOptions): Promise<GenerateResult> {
+  validateConfig(opts.xapiForgeConfig);
   const project = opts.xapiForgeConfig.projects.find((p) => p.name === opts.projectId);
   if (!project) {
     throw new Error(`project '${opts.projectId}' not in xapiForgeConfig.projects`);
   }
 
-  const swaggerDir = resolve(process.cwd(), opts.swaggerDir, project.name);
+  assertNonEmptyString(opts.swaggerDir, "GenerateOptions.swaggerDir");
+  assertNonEmptyString(opts.outputDir, "GenerateOptions.outputDir");
+  const swaggerRoot = resolve(process.cwd(), opts.swaggerDir);
+  const swaggerDir = resolve(swaggerRoot, project.name);
+  assertPathInside(swaggerRoot, swaggerDir, `project ${project.name} Swagger 路径`);
   if (!existsSync(swaggerDir)) {
     throw new Error(`swagger directory not found: ${swaggerDir}`);
   }
 
-  const outDir = resolve(process.cwd(), opts.outputDir, project.name);
+  const outputRoot = resolve(process.cwd(), opts.outputDir);
+  const outDir = resolve(outputRoot, project.name);
+  assertPathInside(outputRoot, outDir, `project ${project.name} 输出路径`);
   const typesDir = join(outDir, "types");
+  const rootHooks = opts.hooks !== undefined ? opts.hooks : opts.xapiForgeConfig.hooks;
+
+  // 所有 service 必须先完成读取、hook 规范化和分析；失败时不创建正式输出目录。
+  const serviceModels = await loadServiceModels(project, swaggerDir, outDir, rootHooks);
   await mkdir(typesDir, { recursive: true });
 
-  // hooks 合并策略：service 级覆盖项目级（`svc.hooks ?? config.hooks`）
-  // - 不传 svc.hooks → 用顶层 config.hooks（同一后端框架场景）
-  // - 传 svc.hooks = {} → 显式禁用所有 hook（跨框架特殊服务场景）
-  // - 传 svc.hooks = { transformSwagger: ... } → 仅此 service 用自定义 hook
-  const resolveHooks = (svc: ServiceConfig): GenapiHooks | undefined =>
-    svc.hooks !== undefined ? svc.hooks : opts.hooks;
-
-  // 1. openapi-typescript → types/<svc>.ts（社区工具，最精准的 path → response 类型推导）
-  //
-  // Hook 2 transformSwagger 接入点：在 openapi-typescript 调用前规范化 swagger。
-  //   - 不改原 swagger.json（hooks 仅读）
-  //   - 把 hook 返回的 swagger 写入临时文件交给 openapi-typescript
-  //   - 生成完删临时文件
-  //
-  // Hook 3 transformTypes 接入点：openapi-typescript 生成后、写盘前。
-  //   - 读回 typeFile 内容 → 过 hook → 写回
-  //   - 用于注入 runtime enum map 等
-  const serviceNames: string[] = [];
-  for (const svc of project.services) {
-    const swaggerFile = join(swaggerDir, `${svc.name}.json`);
-    if (!existsSync(swaggerFile)) {
-      console.warn(`  swagger/${project.name}/${svc.name}.json 缺失,跳过`);
-      continue;
-    }
-    const typeFile = join(typesDir, `${svc.name}.ts`);
-    const ctx: GenapiHookContext = {
-      projectId: project.name,
-      serviceName: svc.name,
-      swaggerPath: swaggerFile,
-      typesPath: typeFile,
-    };
-    const hooks = resolveHooks(svc);
-
-    // Hook 2：transformSwagger（不传 hook 时直接用原文件）
-    const inputFile = await applyTransformSwagger(swaggerFile, svc.name, hooks, ctx);
-    try {
-      await runOpenapiTypescript(inputFile, typeFile);
-    } finally {
-      // 如果 hook 写了临时文件，删除（原文件不动）
-      if (inputFile !== swaggerFile) {
-        await rm(inputFile, { force: true });
-      }
-    }
-
-    // Hook 3：transformTypes（不传 hook 时跳过，直接读回写一遍也无意义）
-    if (hooks?.transformTypes) {
+  // 1. openapi-typescript → types/<svc>.ts。所有步骤复用同一份 hook 后文档。
+  for (const model of serviceModels) {
+    const typeFile = model.hookContext.typesPath;
+    await runOpenapiTypescript(model.document, typeFile);
+    if (model.hooks?.transformTypes) {
       const original = await readFile(typeFile, "utf8");
-      const transformed = await hooks.transformTypes(original, ctx);
+      const transformed = await model.hooks.transformTypes(original, model.hookContext);
       if (transformed !== original) {
         await writeFile(typeFile, transformed, "utf8");
       }
     }
-
-    serviceNames.push(svc.name);
   }
 
-  // 2. 抽 tag 给 banner/统计用
-  const serviceInfos: ServiceInfo[] = [];
-  for (const svcName of serviceNames) {
-    const swaggerFile = join(swaggerDir, `${svcName}.json`);
-    const text = await readFile(swaggerFile, "utf8");
-    const j: { paths?: Record<string, Record<string, unknown>> } = JSON.parse(text) as {
-      paths?: Record<string, Record<string, unknown>>;
-    };
-    const tagMap = extractTags(j);
-    const endpointCount = Object.values(tagMap).reduce((n, arr) => n + arr.length, 0);
-    serviceInfos.push({ name: svcName, tagMap, endpointCount });
-  }
+  const serviceNames = serviceModels.map((model) => model.config.name);
+  const serviceInfos = serviceModels.map((model) => model.serviceInfo);
 
   // 3. 写 index.ts —— openapi-fetch 形式的业务对象
   const indexContent = renderIndex(
@@ -316,8 +591,7 @@ export async function generate(opts: GenerateOptions): Promise<GenerateResult> {
     const apiTypesContent = renderApiTypes(
       project.name,
       project.displayName,
-      swaggerDir,
-      serviceNames,
+      serviceModels,
       opts.xapiForgeConfig.namespacePrefixAliases,
     );
     await writeFile(apiTypesPath, apiTypesContent, "utf8");
@@ -339,55 +613,21 @@ export async function generate(opts: GenerateOptions): Promise<GenerateResult> {
 /**
  * 跑 openapi-typescript 生成 types.ts。
  */
-async function runOpenapiTypescript(inputFile: string, outputFile: string): Promise<void> {
+async function runOpenapiTypescript(document: OpenAPI3, outputFile: string): Promise<void> {
   // 直接调用依赖的程序 API，不依赖消费者项目是否把传递依赖的 bin 提升到
   // node_modules/.bin。这样 npm、pnpm（含 isolated linker）和 yarn 项目行为一致。
-  const ast = await openapiTS(pathToFileURL(inputFile));
+  const ast = await openapiTS(document);
   await writeFile(outputFile, astToString(ast), "utf8");
-}
-
-/**
- * Hook 2 内核侧实现：读原 swagger → 过 hook → 写临时文件 → 返回临时路径。
- *
- * - 不传 hook 时直接返回原 swaggerFile 路径，openapi-typescript 用原文件。
- * - 传 hook 时把 hook 返回值 JSON.stringify 写入 OS 临时目录的随机文件。
- * - 临时文件由调用方在 finally 中删除（见 generate()）。
- */
-async function applyTransformSwagger(
-  swaggerFile: string,
-  serviceName: string,
-  hooks: GenapiHooks | undefined,
-  ctx: GenapiHookContext,
-): Promise<string> {
-  if (!hooks?.transformSwagger) return swaggerFile;
-
-  const original = await readFile(swaggerFile, "utf8");
-  const parsed: unknown = JSON.parse(original);
-  const transformed = await hooks.transformSwagger(parsed, ctx);
-  if (transformed === undefined || transformed === null) {
-    throw new Error(`transformSwagger(${serviceName}) 返回空值；应返回规范化后的 swagger 对象`);
-  }
-
-  const tmpName = `genapi-${projectSafeName(ctx.projectId)}-${serviceName}-${randomBytes(6).toString("hex")}.json`;
-  const tmpFile = join(tmpdir(), tmpName);
-  await writeFile(tmpFile, JSON.stringify(transformed, null, 2), "utf8");
-  return tmpFile;
-}
-
-/** 项目名转文件名示例片段（仅用于临时文件名，不影响业务侧） */
-function projectSafeName(s: string): string {
-  return s.replace(/[^A-Za-z0-9_-]/g, "_");
 }
 
 /**
  * 从 swagger.json 抽 paths，按 tag 聚合。
  */
-function extractTags(j: {
-  paths?: Record<string, Record<string, unknown>>;
-}): Record<string, TagInfo[]> {
+function extractTags(document: OpenAPI3): Record<string, TagInfo[]> {
   const tags: Record<string, TagInfo[]> = {};
-  for (const [pathStr, methods] of Object.entries(j.paths ?? {})) {
+  for (const [pathStr, methods] of Object.entries(document.paths ?? {})) {
     for (const [method, rawOp] of Object.entries(methods ?? {})) {
+      if (!HTTP_METHODS.has(method.toLowerCase())) continue;
       if (!rawOp || typeof rawOp !== "object") continue;
       const op = rawOp as { tags?: string[]; operationId?: string; summary?: string };
       const tagList = op.tags?.length ? op.tags : ["(untagged)"];
@@ -591,11 +831,11 @@ function renderIndex(
 function renderApiTypes(
   projectId: string,
   projectDisplay: string,
-  projectSwaggerDir: string,
-  serviceNames: string[],
+  serviceModels: ServiceModel[],
   namespacePrefixAliases?: NamespacePrefixAlias[],
 ): string {
   const lines: string[] = [];
+  const serviceNames = serviceModels.map((model) => model.config.name);
 
   lines.push("/* eslint-disable */");
   lines.push("/**");
@@ -618,17 +858,9 @@ function renderApiTypes(
   // 收集所有 schemas（每 service 一份 components，可能有同 full 名重复）
   type SchemaRef = { svc: string; full: string };
   const collected: SchemaRef[] = [];
-  for (const svc of serviceNames) {
-    const svcPath = join(projectSwaggerDir, `${svc}.json`);
-    let j: { components?: { schemas?: Record<string, unknown> } } = {};
-    try {
-      j = JSON.parse(readFileSync(svcPath, "utf8")) as typeof j;
-    } catch {
-      continue;
-    }
-    const schemas = j.components?.schemas ?? {};
-    for (const sn of Object.keys(schemas)) {
-      collected.push({ svc, full: sn });
+  for (const model of serviceModels) {
+    for (const schemaName of Object.keys(model.schemas)) {
+      collected.push({ svc: model.config.name, full: schemaName });
     }
   }
 
