@@ -5,7 +5,9 @@ import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+import { build } from "esbuild";
 
 import { generate, generateMany, validateConfig } from "../dist/index.js";
 
@@ -257,6 +259,156 @@ test("external references fail before writing generated output", async () => {
       /暂不支持外部 \$ref/,
     );
     assert.equal(existsSync(join(root, "generated")), false);
+  });
+});
+
+test("layered client config applies defined service overrides and preserves flat config", async () => {
+  await withTempProject(async (root) => {
+    const pingDocument = document({
+      paths: {
+        "/ping": {
+          get: { responses: { 200: { description: "OK" } } },
+        },
+      },
+    });
+    await writeSwagger(root, "base", pingDocument);
+    await writeSwagger(root, "infrastructure", pingDocument);
+    await generate({
+      xapiForgeConfig: config([service("base"), service("infrastructure")]),
+      projectId: "demo",
+      swaggerDir: "swagger",
+      outputDir: "generated",
+    });
+
+    const generatedIndexPath = join(root, "generated/demo/index.ts");
+    const generatedIndex = await readFile(generatedIndexPath, "utf8");
+    assert.match(generatedIndex, /import type \{ NetClient, NetConfig, ValidateStatus \}/);
+    assert.match(generatedIndex, /"retryDelayMs"/);
+    assert.match(generatedIndex, /"logger"/);
+    assert.match(generatedIndex, /override\.middleware === undefined/);
+
+    await writeFile(
+      join(root, "layered-usage.ts"),
+      `import { createDemoClient } from "./generated/demo/index.js";
+import type { ApiDemo } from "./generated/demo/index.js";
+import type { NetConfig } from "@xapiforge/core";
+declare const authService: NetConfig["authService"];
+const layered: ApiDemo<true> = createDemoClient({
+  defaults: {
+    baseURL: "https://gateway.example.test",
+    authService,
+    validateStatus: (response) => response.status < 500,
+  },
+  services: {
+    infrastructure: { baseURL: "https://infrastructure.example.test", middleware: [] },
+  },
+});
+const flat: ApiDemo<false> = createDemoClient({
+  baseURL: "https://legacy.example.test",
+  authService,
+});
+void layered;
+void flat;
+`,
+      "utf8",
+    );
+    await writeFile(
+      join(root, "layered-tsconfig.json"),
+      JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: "ES2022",
+          module: "ESNext",
+          moduleResolution: "Bundler",
+          skipLibCheck: true,
+          baseUrl: root,
+          paths: {
+            "@xapiforge/core": [join(packageDir, "../core/src/index.ts")],
+          },
+        },
+        include: ["layered-usage.ts"],
+      }),
+      "utf8",
+    );
+    const typed = spawnSync(
+      process.execPath,
+      [tscPath, "-p", join(root, "layered-tsconfig.json")],
+      { cwd: root, encoding: "utf8" },
+    );
+    assert.equal(typed.status, 0, `${typed.stdout}\n${typed.stderr}`);
+
+    const bundlePath = join(root, "generated-client.mjs");
+    await build({
+      entryPoints: [generatedIndexPath],
+      bundle: true,
+      format: "esm",
+      platform: "node",
+      target: "node20",
+      outfile: bundlePath,
+      logLevel: "silent",
+      alias: {
+        "@xapiforge/core": join(packageDir, "../core/src/index.ts"),
+      },
+    });
+    const { createDemoClient } = await import(
+      `${pathToFileURL(bundlePath).href}?test=${Date.now()}`
+    );
+    const requests = [];
+    const defaultMiddleware = {
+      onRequest({ request }) {
+        request.headers.set("x-config-source", "defaults");
+        return request;
+      },
+    };
+    const infrastructureMiddleware = {
+      onRequest({ request }) {
+        request.headers.set("x-config-source", "infrastructure");
+        return request;
+      },
+    };
+    const fetch = async (request) => {
+      requests.push({
+        url: request.url,
+        source: request.headers.get("x-config-source"),
+      });
+      return new Response("{}", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+    const authService = { getToken: async () => null };
+
+    const layered = createDemoClient({
+      defaults: {
+        baseURL: "https://gateway.example.test",
+        authService,
+        middleware: [defaultMiddleware],
+        fetch,
+      },
+      services: {
+        infrastructure: {
+          baseURL: "https://infrastructure.example.test",
+          middleware: [infrastructureMiddleware],
+          fetch: undefined,
+        },
+      },
+    });
+    await layered.base.GET("/ping");
+    await layered.infrastructure.GET("/ping");
+
+    const flat = createDemoClient({
+      baseURL: "https://legacy.example.test",
+      authService,
+      fetch,
+    });
+    await flat.base.GET("/ping");
+
+    assert.deepEqual(requests, [
+      { url: "https://gateway.example.test/ping", source: "defaults" },
+      { url: "https://infrastructure.example.test/ping", source: "infrastructure" },
+      { url: "https://legacy.example.test/ping", source: null },
+    ]);
   });
 });
 

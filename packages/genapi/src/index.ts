@@ -1240,11 +1240,11 @@ function renderIndex(
   parts.push(" *");
   parts.push(" * 设计：");
   parts.push(
-    " *   - 每个 service 用 createNet<paths> 创建独立 client（共享同一 authService + middleware）",
+    " *   - 每个 service 用 createNet<paths> 创建独立 client（service override > project defaults）",
   );
   parts.push(" *   - createNet 成功返回 { data, response }；最终失败统一抛 ApiError");
   parts.push(
-    " *   - 业务侧 middleware（envelope 解包等）由 config.middleware 传入，按 service 共享",
+    " *   - 业务侧 middleware（envelope 解包等）可由 defaults 共享，也可由 service 整体替换",
   );
   parts.push(" *   - retry loop（429 退避 / auth retry）由 createNet 统一管理");
   parts.push(" *");
@@ -1267,12 +1267,10 @@ function renderIndex(
   parts.push(" */");
   parts.push("");
 
-  // import createNet + AuthService 类型 + 每个 service paths
+  // import createNet + Core 配置类型 + 每个 service paths
   parts.push("// @xapiforge/core createNet：封装 openapi-fetch + data-or-throw + auth/retry");
   parts.push('import { createNet } from "@xapiforge/core";');
-  parts.push(
-    'import type { AuthService, Middleware, FetchLike, NetClient, ValidateStatus, ResolveErrorMessage } from "@xapiforge/core";',
-  );
+  parts.push('import type { NetClient, NetConfig, ValidateStatus } from "@xapiforge/core";');
   parts.push("");
   for (const svc of serviceNames) {
     parts.push(`import type { paths as ${cap(svc)}Paths } from "./types/${svc}.js";`);
@@ -1292,9 +1290,7 @@ function renderIndex(
   parts.push(" * - 顶层 key: service 英文短码（与 xapiforge.config.ts 服务名对应）");
   parts.push(" * - client: createNet 返回的强类型 client（GET/POST/PUT/DELETE/PATCH 强类型）");
   parts.push(" * - 内核自动注入：auth/retry + validateStatus；最终失败统一抛 ApiError");
-  parts.push(
-    " * - 业务侧 middleware（envelope 解包）通过 config.middleware 注入，所有 service 共享",
-  );
+  parts.push(" * - 业务侧 middleware（envelope 解包）通过 defaults 注入，service 可显式整体替换");
   parts.push(" *");
   parts.push(" * 调用形式（method/path/body 全强类型）：");
   parts.push(
@@ -1304,29 +1300,72 @@ function renderIndex(
     ` *   api.${firstServiceKey}.POST("/api/identity/users", { body: { userName: "x", ... } });`,
   );
   parts.push(" */");
-  parts.push(`export interface Api${cap(projectId)}ClientConfig {`);
-  parts.push(`  baseURL: string;`);
-  parts.push(`  /** AuthService 实例（管 token 存储 + refresh 单飞 + onAuthFailed） */`);
-  parts.push(`  authService: AuthService;`);
-  parts.push(`  /** 业务 middleware（envelope 解包 / 业务错误判定），所有 service 共享 */`);
-  parts.push(`  middleware?: Middleware[];`);
-  parts.push(`  /** 全局 HTTP 成功判定；默认 response.ok。单次请求可覆盖 */`);
-  parts.push(`  validateStatus?: ValidateStatus;`);
-  parts.push(`  /** 全局错误文案解析器；单次请求可覆盖 */`);
-  parts.push(`  resolveErrorMessage?: ResolveErrorMessage;`);
-  parts.push(`  /** retry loop 最大重试次数（不含首次请求），默认 1；429 场景建议 3 */`);
-  parts.push(`  maxRetries?: number;`);
   parts.push(
-    `  /** 自定义 fetch（默认 globalThis.fetch）；Capacitor 业务侧传 capacitorFetch 走原生 HTTP */`,
+    `export type Api${cap(projectId)}ServiceName = ${serviceNames.map((name) => JSON.stringify(name)).join(" | ")};`,
   );
-  parts.push(`  fetch?: FetchLike;`);
-  parts.push(`  /** 默认请求超时（毫秒），默认 15000 */`);
-  parts.push(`  defaultTimeoutMs?: number;`);
+  parts.push("");
+  parts.push("/** service 级允许覆盖的 Core 配置；middleware 数组为替换语义，不会自动拼接。 */");
+  parts.push(`export type Api${cap(projectId)}ServiceOverrides = Partial<`);
+  parts.push(`  Pick<`);
+  parts.push(`    NetConfig,`);
+  parts.push(
+    `    | "baseURL" | "authService" | "middleware" | "fetch" | "defaultTimeoutMs" | "maxRetries" | "retryDelayMs" | "logger"`,
+  );
+  parts.push(`  >`);
+  parts.push(`>;`);
+  parts.push("");
+  parts.push(`export interface Api${cap(projectId)}LayeredClientConfig {`);
+  parts.push(`  /** project 默认配置；validateStatus 与 resolveErrorMessage 保持 project 级。 */`);
+  parts.push(`  defaults: NetConfig;`);
+  parts.push(`  /** service override 仅覆盖值不为 undefined 的字段。 */`);
+  parts.push(`  services?: Partial<`);
+  parts.push(`    Record<Api${cap(projectId)}ServiceName, Api${cap(projectId)}ServiceOverrides>`);
+  parts.push(`  >;`);
   parts.push("}");
+  parts.push("");
+  parts.push(`/** 兼容旧的平铺 NetConfig，也支持 defaults/services 分层配置。 */`);
+  parts.push(
+    `export type Api${cap(projectId)}ClientConfig = NetConfig | Api${cap(projectId)}LayeredClientConfig;`,
+  );
+  parts.push("");
+  parts.push(`export type Api${cap(projectId)}ClientConfigWithCustomStatus =`);
+  parts.push(`  | (NetConfig & { validateStatus: ValidateStatus })`);
+  parts.push(`  | (Omit<Api${cap(projectId)}LayeredClientConfig, "defaults"> & {`);
+  parts.push(`      defaults: NetConfig & { validateStatus: ValidateStatus };`);
+  parts.push(`    });`);
+  parts.push("");
+  parts.push(`function merge${cap(projectId)}ServiceConfig(`);
+  parts.push(`  defaults: NetConfig,`);
+  parts.push(`  override: Api${cap(projectId)}ServiceOverrides | undefined,`);
+  parts.push(`): NetConfig {`);
+  parts.push(`  if (!override) return defaults;`);
+  parts.push(`  return {`);
+  parts.push(`    baseURL: override.baseURL === undefined ? defaults.baseURL : override.baseURL,`);
+  parts.push(
+    `    authService: override.authService === undefined ? defaults.authService : override.authService,`,
+  );
+  parts.push(
+    `    middleware: override.middleware === undefined ? defaults.middleware : override.middleware,`,
+  );
+  parts.push(`    validateStatus: defaults.validateStatus,`);
+  parts.push(`    resolveErrorMessage: defaults.resolveErrorMessage,`);
+  parts.push(`    fetch: override.fetch === undefined ? defaults.fetch : override.fetch,`);
+  parts.push(
+    `    defaultTimeoutMs: override.defaultTimeoutMs === undefined ? defaults.defaultTimeoutMs : override.defaultTimeoutMs,`,
+  );
+  parts.push(
+    `    maxRetries: override.maxRetries === undefined ? defaults.maxRetries : override.maxRetries,`,
+  );
+  parts.push(
+    `    retryDelayMs: override.retryDelayMs === undefined ? defaults.retryDelayMs : override.retryDelayMs,`,
+  );
+  parts.push(`    logger: override.logger === undefined ? defaults.logger : override.logger,`);
+  parts.push(`  };`);
+  parts.push(`}`);
   parts.push("");
 
   parts.push(`export function create${cap(projectId)}Client(`);
-  parts.push(`  config: Api${cap(projectId)}ClientConfig & { validateStatus: ValidateStatus },`);
+  parts.push(`  config: Api${cap(projectId)}ClientConfigWithCustomStatus,`);
   parts.push(`): Api${cap(projectId)}<true>;`);
   parts.push(`export function create${cap(projectId)}Client(`);
   parts.push(`  config: Api${cap(projectId)}ClientConfig,`);
@@ -1334,22 +1373,16 @@ function renderIndex(
   parts.push(`export function create${cap(projectId)}Client(`);
   parts.push(`  config: Api${cap(projectId)}ClientConfig,`);
   parts.push(`): Api${cap(projectId)}<boolean> {`);
-  parts.push(`  // 每个 service 共享同一 authService + middleware + fetch 配置`);
-  parts.push(`  const netConfig = {`);
-  parts.push(`    baseURL: config.baseURL,`);
-  parts.push(`    authService: config.authService,`);
-  parts.push(`    middleware: config.middleware,`);
-  parts.push(`    validateStatus: config.validateStatus,`);
-  parts.push(`    resolveErrorMessage: config.resolveErrorMessage,`);
-  parts.push(`    maxRetries: config.maxRetries,`);
-  parts.push(`    fetch: config.fetch,`);
-  parts.push(`    defaultTimeoutMs: config.defaultTimeoutMs,`);
-  parts.push(`  };`);
+  parts.push(`  const layered = "defaults" in config;`);
+  parts.push(`  const defaults = layered ? config.defaults : config;`);
+  parts.push(`  const serviceOverrides = layered ? config.services : undefined;`);
   parts.push(`  return {`);
 
   for (const s of services) {
     parts.push(`    /** ${s.name}（${s.endpointCount} endpoints） */`);
-    parts.push(`    ${safeKey(s.name)}: createNet<${cap(s.name)}Paths>(netConfig),`);
+    parts.push(
+      `    ${safeKey(s.name)}: createNet<${cap(s.name)}Paths>(merge${cap(projectId)}ServiceConfig(defaults, serviceOverrides?.[${JSON.stringify(s.name)}])),`,
+    );
   }
   parts.push("  };");
   parts.push("}");
