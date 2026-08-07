@@ -28,10 +28,10 @@
  *   // → 产出 src/api/gen/demo/index.ts + src/api/gen/demo/types/<svc>.ts + src/api/gen/demo/api-types.ts
  */
 
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { createHash } from "node:crypto";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
 import openapiTS, { astToString, type OpenAPI3 } from "openapi-typescript";
 
 // ---------- 语义类型 ----------
@@ -230,6 +230,21 @@ interface ProjectArtifacts {
   result: Omit<GenerateResult, "changed" | "changedFiles">;
   outputDir: string;
   files: ReadonlyMap<string, string>;
+}
+
+interface TransactionProjectState {
+  project: string;
+  output: string;
+  staging: string;
+  backup: string;
+  hadOutput: boolean;
+}
+
+interface TransactionState {
+  formatVersion: 1;
+  transactionId: string;
+  phase: "committing" | "committed";
+  projects: TransactionProjectState[];
 }
 
 const CONFIG_ID_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
@@ -644,19 +659,48 @@ export async function generateMany(options: GenerateOptions[]): Promise<Generate
     projects.push(next);
   }
 
-  const results: GenerateResult[] = [];
-  for (const project of projects) {
-    const changedFiles = await compareArtifacts(project.outputDir, project.files);
-    if (!checkMode && changedFiles.length > 0) {
-      await writeArtifacts(project.outputDir, project.files);
+  if (checkMode) {
+    const results: GenerateResult[] = [];
+    for (const project of projects) {
+      const changedFiles = await compareArtifacts(project.outputDir, project.files);
+      results.push({
+        ...project.result,
+        changed: changedFiles.length > 0,
+        changedFiles,
+      });
     }
-    results.push({
+    return results;
+  }
+
+  const outputRoots = [...new Set(projects.map((project) => dirname(project.outputDir)))];
+  if (outputRoots.length !== 1) {
+    throw new Error("[genapi] 一次 generateMany 事务中的 project 必须使用同一 outputDir 根目录");
+  }
+  const outputRoot = outputRoots[0]!;
+  const releaseLock = await acquireGenerationLock(outputRoot);
+  try {
+    await recoverInterruptedTransactions(outputRoot);
+    for (const project of projects) await recoverOrphanProjectDirectories(project.outputDir);
+
+    const evaluated: Array<{ project: ProjectArtifacts; changedFiles: string[] }> = [];
+    for (const project of projects) {
+      evaluated.push({
+        project,
+        changedFiles: await compareArtifacts(project.outputDir, project.files),
+      });
+    }
+    await commitProjectArtifacts(
+      outputRoot,
+      evaluated.filter((item) => item.changedFiles.length > 0).map((item) => item.project),
+    );
+    return evaluated.map(({ project, changedFiles }) => ({
       ...project.result,
       changed: changedFiles.length > 0,
       changedFiles,
-    });
+    }));
+  } finally {
+    await releaseLock();
   }
-  return results;
 }
 
 export async function generate(opts: GenerateOptions): Promise<GenerateResult> {
@@ -765,6 +809,247 @@ async function writeArtifacts(
     await mkdir(dirname(target), { recursive: true });
     await writeFile(target, content, "utf8");
   }
+}
+
+function fileSystemErrorCode(cause: unknown): string | undefined {
+  return isRecord(cause) && typeof cause.code === "string" ? cause.code : undefined;
+}
+
+async function acquireGenerationLock(outputRoot: string): Promise<() => Promise<void>> {
+  await mkdir(outputRoot, { recursive: true });
+  const lockPath = join(outputRoot, ".xapiforge-generation.lock");
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const handle = await open(lockPath, "wx");
+      await handle.writeFile(`${JSON.stringify({ formatVersion: 1, pid: process.pid })}\n`, "utf8");
+      return async () => {
+        await handle.close();
+        await unlink(lockPath).catch((cause: unknown) => {
+          if (fileSystemErrorCode(cause) !== "ENOENT") throw cause;
+        });
+      };
+    } catch (cause) {
+      if (fileSystemErrorCode(cause) !== "EEXIST") throw cause;
+      let lock: { pid?: unknown };
+      try {
+        lock = JSON.parse(await readFile(lockPath, "utf8")) as { pid?: unknown };
+      } catch (readCause) {
+        throw new Error(`[genapi] 无法读取生成锁：${lockPath}`, { cause: readCause });
+      }
+      if (!Number.isInteger(lock.pid) || Number(lock.pid) <= 0) {
+        throw new Error(`[genapi] 生成锁内容无效，请人工确认后处理：${lockPath}`);
+      }
+      let processAlive = true;
+      try {
+        process.kill(Number(lock.pid), 0);
+      } catch (processCause) {
+        processAlive = fileSystemErrorCode(processCause) !== "ESRCH";
+      }
+      if (processAlive) {
+        throw new Error(`[genapi] 生成目录正被 PID ${String(lock.pid)} 使用：${outputRoot}`);
+      }
+      await unlink(lockPath);
+    }
+  }
+  throw new Error(`[genapi] 无法获取生成锁：${lockPath}`);
+}
+
+function transactionStatePath(outputRoot: string, transactionId: string): string {
+  return join(outputRoot, `.xapiforge-transaction-${transactionId}.json`);
+}
+
+function validateTransactionState(
+  value: unknown,
+  statePath: string,
+): asserts value is TransactionState {
+  if (!isRecord(value) || value.formatVersion !== 1 || typeof value.transactionId !== "string") {
+    throw new Error(`[genapi] transaction state 无效：${statePath}`);
+  }
+  if (value.phase !== "committing" && value.phase !== "committed") {
+    throw new Error(`[genapi] transaction phase 无效：${statePath}`);
+  }
+  if (!Array.isArray(value.projects))
+    throw new Error(`[genapi] transaction projects 无效：${statePath}`);
+  for (const project of value.projects) {
+    if (
+      !isRecord(project) ||
+      typeof project.project !== "string" ||
+      !CONFIG_ID_PATTERN.test(project.project) ||
+      typeof project.output !== "string" ||
+      typeof project.staging !== "string" ||
+      typeof project.backup !== "string" ||
+      typeof project.hadOutput !== "boolean"
+    ) {
+      throw new Error(`[genapi] transaction project 无效：${statePath}`);
+    }
+  }
+}
+
+function resolveTransactionEntryPath(
+  outputRoot: string,
+  name: string,
+  expectedPrefix: string,
+  statePath: string,
+): string {
+  const prefixMatches = expectedPrefix.startsWith(".")
+    ? name.startsWith(expectedPrefix)
+    : name === expectedPrefix;
+  if (basename(name) !== name || !prefixMatches) {
+    throw new Error(`[genapi] transaction 路径不合法：${statePath} -> ${name}`);
+  }
+  const resolved = resolve(outputRoot, name);
+  assertPathInside(outputRoot, resolved, "transaction 路径");
+  return resolved;
+}
+
+async function recoverTransactionState(
+  outputRoot: string,
+  state: TransactionState,
+  statePath: string,
+): Promise<void> {
+  for (const project of [...state.projects].reverse()) {
+    const outputDir = resolveTransactionEntryPath(
+      outputRoot,
+      project.output,
+      project.project,
+      statePath,
+    );
+    const stagingDir = resolveTransactionEntryPath(
+      outputRoot,
+      project.staging,
+      `.${project.project}.xapiforge-tmp-`,
+      statePath,
+    );
+    const backupDir = resolveTransactionEntryPath(
+      outputRoot,
+      project.backup,
+      `.${project.project}.xapiforge-backup-`,
+      statePath,
+    );
+
+    if (state.phase === "committing") {
+      if (existsSync(backupDir)) {
+        if (existsSync(outputDir)) await rm(outputDir, { recursive: true, force: true });
+        await rename(backupDir, outputDir);
+      } else if (!project.hadOutput && existsSync(outputDir) && !existsSync(stagingDir)) {
+        await rm(outputDir, { recursive: true, force: true });
+      }
+    } else if (existsSync(backupDir)) {
+      await rm(backupDir, { recursive: true, force: true });
+    }
+    await rm(stagingDir, { recursive: true, force: true });
+  }
+  await unlink(statePath).catch((cause: unknown) => {
+    if (fileSystemErrorCode(cause) !== "ENOENT") throw cause;
+  });
+}
+
+async function recoverInterruptedTransactions(outputRoot: string): Promise<void> {
+  if (!existsSync(outputRoot)) return;
+  const stateFiles = (await readdir(outputRoot))
+    .filter((name) => /^\.xapiforge-transaction-[A-Za-z0-9-]+\.json$/.test(name))
+    .sort();
+  for (const stateFile of stateFiles) {
+    const statePath = join(outputRoot, stateFile);
+    let state: unknown;
+    try {
+      state = JSON.parse(await readFile(statePath, "utf8"));
+    } catch (cause) {
+      throw new Error(`[genapi] 无法解析 transaction state，请人工确认：${statePath}`, { cause });
+    }
+    validateTransactionState(state, statePath);
+    await recoverTransactionState(outputRoot, state, statePath);
+  }
+}
+
+async function recoverOrphanProjectDirectories(outputDir: string): Promise<void> {
+  const outputRoot = dirname(outputDir);
+  if (!existsSync(outputRoot)) return;
+  const project = basename(outputDir);
+  const entries = await readdir(outputRoot);
+  const backups = entries.filter((name) => name.startsWith(`.${project}.xapiforge-backup-`)).sort();
+  const stagings = entries.filter((name) => name.startsWith(`.${project}.xapiforge-tmp-`)).sort();
+  if (backups.length > 1) {
+    throw new Error(
+      `[genapi] project ${project} 存在多个孤立 backup，请人工确认：${backups.join(", ")}`,
+    );
+  }
+  if (backups.length === 1) {
+    const backupDir = join(outputRoot, backups[0]!);
+    if (existsSync(outputDir)) await rm(backupDir, { recursive: true, force: true });
+    else await rename(backupDir, outputDir);
+  }
+  for (const staging of stagings) {
+    await rm(join(outputRoot, staging), { recursive: true, force: true });
+  }
+}
+
+async function writeTransactionState(outputRoot: string, state: TransactionState): Promise<string> {
+  const statePath = transactionStatePath(outputRoot, state.transactionId);
+  await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  return statePath;
+}
+
+async function commitProjectArtifacts(
+  outputRoot: string,
+  projects: ProjectArtifacts[],
+): Promise<void> {
+  if (projects.length === 0) return;
+  const transactionId = randomUUID();
+  const state: TransactionState = {
+    formatVersion: 1,
+    transactionId,
+    phase: "committing",
+    projects: projects.map((project) => {
+      const projectName = basename(project.outputDir);
+      return {
+        project: projectName,
+        output: projectName,
+        staging: `.${projectName}.xapiforge-tmp-${transactionId}`,
+        backup: `.${projectName}.xapiforge-backup-${transactionId}`,
+        hadOutput: existsSync(project.outputDir),
+      };
+    }),
+  };
+
+  try {
+    for (const [index, project] of projects.entries()) {
+      const entry = state.projects[index]!;
+      await writeArtifacts(join(outputRoot, entry.staging), project.files);
+    }
+  } catch (cause) {
+    await Promise.all(
+      state.projects.map((entry) =>
+        rm(join(outputRoot, entry.staging), { recursive: true, force: true }),
+      ),
+    );
+    throw cause;
+  }
+
+  const statePath = await writeTransactionState(outputRoot, state);
+  try {
+    for (const entry of state.projects) {
+      const outputDir = join(outputRoot, entry.output);
+      if (entry.hadOutput) await rename(outputDir, join(outputRoot, entry.backup));
+    }
+    for (const entry of state.projects) {
+      await rename(join(outputRoot, entry.staging), join(outputRoot, entry.output));
+    }
+    const committedState: TransactionState = { ...state, phase: "committed" };
+    await writeTransactionState(outputRoot, committedState);
+    state.phase = "committed";
+  } catch (cause) {
+    try {
+      await recoverTransactionState(outputRoot, state, statePath);
+    } catch (rollbackCause) {
+      throw new Error(`[genapi] 提交失败且自动回滚未完成，transaction state：${statePath}`, {
+        cause: new AggregateError([cause, rollbackCause]),
+      });
+    }
+    throw new Error("[genapi] 提交生成目录失败，旧产物已恢复", { cause });
+  }
+
+  await recoverTransactionState(outputRoot, state, statePath);
 }
 
 /**

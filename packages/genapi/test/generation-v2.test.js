@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -354,5 +354,80 @@ test("generateMany prepares every project before writing any output", async () =
       /second project failed/,
     );
     assert.equal(existsSync(join(root, "generated")), false);
+  });
+});
+
+test("transactional replacement removes stale service files and leaves no transaction artifacts", async () => {
+  await withTempProject(async (root) => {
+    await writeSwagger(root, "base", document());
+    await writeSwagger(root, "obsolete", document());
+    const common = {
+      projectId: "demo",
+      swaggerDir: "swagger",
+      outputDir: "generated",
+    };
+    await generate({
+      ...common,
+      xapiForgeConfig: config([service("base"), service("obsolete")]),
+    });
+    assert.equal(existsSync(join(root, "generated/demo/types/obsolete.ts")), true);
+
+    const updated = await generate({
+      ...common,
+      xapiForgeConfig: config([service("base")]),
+    });
+    assert.equal(updated.changed, true);
+    assert.ok(updated.changedFiles.includes("types/obsolete.ts"));
+    assert.equal(existsSync(join(root, "generated/demo/types/obsolete.ts")), false);
+
+    const rootEntries = await readdir(join(root, "generated"));
+    assert.deepEqual(rootEntries, ["demo"]);
+  });
+});
+
+test("an interrupted committing transaction restores its backup before the next generation", async () => {
+  await withTempProject(async (root) => {
+    await writeSwagger(root, "base", document());
+    const options = {
+      xapiForgeConfig: config([service("base")]),
+      projectId: "demo",
+      swaggerDir: "swagger",
+      outputDir: "generated",
+    };
+    await generate(options);
+
+    const outputRoot = join(root, "generated");
+    const outputDir = join(outputRoot, "demo");
+    const transactionId = "interrupted-test";
+    const stagingName = `.demo.xapiforge-tmp-${transactionId}`;
+    const backupName = `.demo.xapiforge-backup-${transactionId}`;
+    const stateName = `.xapiforge-transaction-${transactionId}.json`;
+    await rename(outputDir, join(outputRoot, backupName));
+    await mkdir(join(outputRoot, stagingName), { recursive: true });
+    await writeFile(join(outputRoot, stagingName, "partial.txt"), "partial", "utf8");
+    await writeFile(
+      join(outputRoot, stateName),
+      JSON.stringify({
+        formatVersion: 1,
+        transactionId,
+        phase: "committing",
+        projects: [
+          {
+            project: "demo",
+            output: "demo",
+            staging: stagingName,
+            backup: backupName,
+            hadOutput: true,
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    const recovered = await generate(options);
+    assert.equal(recovered.changed, false);
+    assert.equal(existsSync(join(outputDir, "manifest.json")), true);
+    assert.equal(existsSync(join(outputDir, "partial.txt")), false);
+    assert.deepEqual(await readdir(outputRoot), ["demo"]);
   });
 });
