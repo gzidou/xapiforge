@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -103,6 +103,20 @@ test("fetch CLI covers URL online/cache offline/dry-run and direct file sources"
     assert.deepEqual(JSON.parse(await readFile(remoteCache, "utf8")), openApiDocument);
     await assert.rejects(readFile(join(root, "swagger-cache", "demo", "local.json"), "utf8"));
 
+    const sizeLimited = config("online", server.url, [
+      {
+        name: "remote",
+        displayName: "Remote OpenAPI",
+        source: { url: server.url },
+      },
+    ]);
+    sizeLimited.maxSwaggerBytes = 8;
+    await writeConfig(root, sizeLimited);
+    const oversizedRemote = spawnSync(process.execPath, [fetchCliPath], spawnOptions);
+    assert.equal(oversizedRemote.status, 1, `${oversizedRemote.stdout}\n${oversizedRemote.stderr}`);
+    assert.match(oversizedRemote.stdout, /超过最大允许大小 8 B/);
+    assert.deepEqual(JSON.parse(await readFile(remoteCache, "utf8")), openApiDocument);
+
     await stopServer(server.child);
     await writeConfig(root, config("offline", server.url));
     const offline = spawnSync(process.execPath, [fetchCliPath], spawnOptions);
@@ -110,7 +124,8 @@ test("fetch CLI covers URL online/cache offline/dry-run and direct file sources"
     assert.match(offline.stdout, /cache:.*remote\.json/);
     assert.match(offline.stdout, /local.*file:/);
 
-    const dryUrl = "http://127.0.0.1:1/must-not-be-requested.json";
+    const dryUrl =
+      "http://127.0.0.1:1/must-not-be-requested.json?token=must-not-leak&tenant=stable";
     await writeConfig(
       root,
       config("offline", dryUrl, [
@@ -125,6 +140,8 @@ test("fetch CLI covers URL online/cache offline/dry-run and direct file sources"
     assert.equal(dryRun.status, 0, `${dryRun.stdout}\n${dryRun.stderr}`);
     assert.match(dryRun.stdout, /OpenAPI source（dry-run）/);
     assert.match(dryRun.stdout, /\[dry\].*must-not-be-requested\.json/);
+    assert.doesNotMatch(dryRun.stdout, /must-not-leak/);
+    assert.match(dryRun.stdout, /tenant=stable/);
     await assert.rejects(readFile(join(root, "swagger-cache", "demo", "dry.json"), "utf8"));
 
     await writeConfig(
@@ -140,8 +157,131 @@ test("fetch CLI covers URL online/cache offline/dry-run and direct file sources"
     const missingCache = spawnSync(process.execPath, [fetchCliPath], spawnOptions);
     assert.equal(missingCache.status, 1, `${missingCache.stdout}\n${missingCache.stderr}`);
     assert.match(missingCache.stdout, /\[FAIL\].*missing/);
+
+    await mkdir(join(root, "fixtures/not-a-file.json"), { recursive: true });
+    await writeConfig(
+      root,
+      config("offline", dryUrl, [
+        {
+          name: "directory",
+          displayName: "Directory source",
+          source: { file: "fixtures/not-a-file.json" },
+        },
+      ]),
+    );
+    const directorySource = spawnSync(process.execPath, [fetchCliPath], spawnOptions);
+    assert.equal(directorySource.status, 1, `${directorySource.stdout}\n${directorySource.stderr}`);
+    assert.match(directorySource.stdout, /不是普通文件或指向普通文件的 symlink/);
+
+    const localSizeLimited = config("offline", dryUrl, [
+      {
+        name: "local",
+        displayName: "Local OpenAPI",
+        source: { file: "fixtures/not-the-service-id.json" },
+      },
+    ]);
+    localSizeLimited.maxSwaggerBytes = 8;
+    await writeConfig(root, localSizeLimited);
+    const oversizedLocal = spawnSync(process.execPath, [fetchCliPath], spawnOptions);
+    assert.equal(oversizedLocal.status, 1, `${oversizedLocal.stdout}\n${oversizedLocal.stderr}`);
+    assert.match(oversizedLocal.stdout, /超过 maxSwaggerBytes \(8 B\)/);
   } finally {
     await stopServer(server.child);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("fetch CLI rejects missing, empty, and unknown --only values", async () => {
+  const root = await mkdtemp(join(tmpdir(), "xapiforge-fetch-only-"));
+  const spawnOptions = { cwd: root, encoding: "utf8" };
+  try {
+    const missing = spawnSync(process.execPath, [fetchCliPath, "--only"], spawnOptions);
+    assert.equal(missing.status, 1);
+    assert.match(missing.stderr, /--only 缺少参数值/);
+
+    const empty = spawnSync(process.execPath, [fetchCliPath, "--only", ",,"], spawnOptions);
+    assert.equal(empty.status, 1);
+    assert.match(empty.stderr, /--only 至少需要一个 project ID/);
+
+    await mkdir(join(root, "fixtures"), { recursive: true });
+    await writeFile(join(root, "fixtures/local.json"), JSON.stringify(openApiDocument), "utf8");
+    await writeConfig(
+      root,
+      config("offline", "https://example.test/unused.json", [
+        {
+          name: "local",
+          displayName: "Local OpenAPI",
+          source: { file: "fixtures/local.json" },
+        },
+      ]),
+    );
+
+    const mixed = spawnSync(
+      process.execPath,
+      [fetchCliPath, "--only", "demo,misspelled"],
+      spawnOptions,
+    );
+    assert.equal(mixed.status, 1);
+    assert.match(mixed.stderr, /--only 包含未知 project：misspelled/);
+
+    const selected = spawnSync(process.execPath, [fetchCliPath, "--only", "demo"], spawnOptions);
+    assert.equal(selected.status, 0, `${selected.stdout}\n${selected.stderr}`);
+    assert.match(selected.stdout, /demo\/local.*file:/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("fetch CLI rejects a remote cache that would overwrite a file source", async () => {
+  const root = await mkdtemp(join(tmpdir(), "xapiforge-fetch-collision-"));
+  const remoteUrl = "http://127.0.0.1:1/must-not-be-requested.json";
+  try {
+    let localSourcePath = "swagger-cache/remote-project/remote.json";
+    if (process.platform !== "win32") {
+      await mkdir(join(root, "aliases"));
+      localSourcePath = "aliases/remote.json";
+      await symlink("../swagger-cache/remote-project/remote.json", join(root, localSourcePath));
+    }
+    await writeConfig(root, {
+      timeoutMs: 1_000,
+      outputDir: "swagger-cache",
+      mode: "online",
+      projects: [
+        {
+          name: "remote-project",
+          displayName: "Remote project",
+          services: [
+            {
+              name: "remote",
+              displayName: "Remote OpenAPI",
+              source: { url: remoteUrl },
+            },
+          ],
+        },
+        {
+          name: "local-project",
+          displayName: "Local project",
+          services: [
+            {
+              name: "local",
+              displayName: "Local OpenAPI",
+              source: { file: localSourcePath },
+            },
+          ],
+        },
+      ],
+    });
+    const result = spawnSync(process.execPath, [fetchCliPath, "--only", "remote-project"], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 1);
+    assert.match(
+      result.stderr,
+      /远程 source remote-project\/remote 的缓存会覆盖本地 source local-project\/local/,
+    );
+    await assert.rejects(readFile(join(root, "swagger-cache/remote-project/remote.json"), "utf8"));
+  } finally {
     await rm(root, { recursive: true, force: true });
   }
 });

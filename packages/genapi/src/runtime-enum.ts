@@ -1,45 +1,8 @@
 import type { GenapiHookContext, GenapiHooks, TransformSwaggerHook } from "./index.js";
+import { safeCommentText, TYPESCRIPT_RESERVED_WORDS } from "./naming.js";
 
 const RUNTIME_ENUM_VALUES = "x-xapiforge-runtime-enum-values";
 const TYPESCRIPT_IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
-const TYPESCRIPT_RESERVED_WORDS = new Set([
-  "break",
-  "case",
-  "catch",
-  "class",
-  "const",
-  "continue",
-  "debugger",
-  "default",
-  "delete",
-  "do",
-  "else",
-  "enum",
-  "export",
-  "extends",
-  "false",
-  "finally",
-  "for",
-  "function",
-  "if",
-  "import",
-  "in",
-  "instanceof",
-  "new",
-  "null",
-  "return",
-  "super",
-  "switch",
-  "this",
-  "throw",
-  "true",
-  "try",
-  "typeof",
-  "var",
-  "void",
-  "while",
-  "with",
-]);
 
 type EnumValue = string | number;
 type UnknownRecord = Record<string, unknown>;
@@ -104,7 +67,7 @@ function validateMetadata(
     if (entry.isFlags !== undefined && typeof entry.isFlags !== "boolean") {
       throw enumError(ctx, `metadata[${JSON.stringify(schemaName)}].isFlags 必须是 boolean`);
     }
-    if (!(schemaName in schemas)) {
+    if (!Object.prototype.hasOwnProperty.call(schemas, schemaName)) {
       throw enumError(ctx, `metadata 引用了不存在的 schema ${JSON.stringify(schemaName)}`);
     }
   }
@@ -263,7 +226,7 @@ function collectDefinitions(
 function renderDefinition(definition: RuntimeEnumDefinition): string {
   const { exportName, values, names, labels, isFlags } = definition;
   const lines = [
-    `/** ${definition.schemaName}${isFlags ? "（Flags；API 字段保持 number，组合值请使用位运算）" : ""} */`,
+    `/** ${safeCommentText(definition.schemaName)}${isFlags ? "（Flags；API 字段保持 number，组合值请使用位运算）" : ""} */`,
     `export const ${exportName} = {`,
   ];
   for (let index = 0; index < values.length; index += 1) {

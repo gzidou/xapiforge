@@ -20,8 +20,14 @@ import {
   type ServiceConfig,
   type XApiForgeConfig,
 } from "./index.js";
-import { isSwaggerFileSource, resolveSwaggerInputPath } from "./swagger-source.js";
-import { fetchSwaggerJson, formatBytes } from "./swagger-fetch.js";
+import {
+  formatSwaggerUrlForLog,
+  isSwaggerFileSource,
+  resolveSwaggerInputPath,
+} from "./swagger-source.js";
+import { DEFAULT_MAX_SWAGGER_BYTES, fetchSwaggerJson, formatBytes } from "./swagger-fetch.js";
+import { parseJsonInput } from "./json-input.js";
+import { pathIdentity, resolvePhysicalPath } from "./filesystem-path.js";
 
 /** 加载 cwd 下的 TypeScript 或 JavaScript 配置。 */
 async function loadConfig(cwd: string): Promise<XApiForgeConfig> {
@@ -87,10 +93,17 @@ function parseCli(argv: readonly string[]): ParsedCli {
     } else if (argument === "--dry-run") {
       result.dryRun = true;
     } else if (argument === "--only") {
-      result.only = (argv[(index += 1)] ?? "")
+      const value = argv[index + 1];
+      if (value === undefined || value.startsWith("-")) {
+        throw new Error("--only 缺少参数值");
+      }
+      index += 1;
+      const projects = value
         .split(",")
         .map((value) => value.trim())
         .filter(Boolean);
+      if (projects.length === 0) throw new Error("--only 至少需要一个 project ID");
+      result.only.push(...projects);
     } else {
       throw new Error(`未知参数：${argument}`);
     }
@@ -119,6 +132,60 @@ function serviceLabel(service: ServiceConfig): string {
   return `${service.displayName} (${service.name})`;
 }
 
+async function bestEffortPhysicalIdentity(path: string): Promise<string> {
+  try {
+    return pathIdentity(await resolvePhysicalPath(path));
+  } catch {
+    // 未选项目的路径可能暂时不可访问；仍执行纯路径碰撞检查。
+    return pathIdentity(path);
+  }
+}
+
+/** online 下载不得覆盖另一个 service 明确配置的 source.file。 */
+async function assertNoDownloadSourceCollisions(
+  cwd: string,
+  swaggerRoot: string,
+  configuredProjects: readonly ProjectConfig[],
+  downloadProjects: readonly ProjectConfig[],
+): Promise<void> {
+  const fileSources = new Map<string, string[]>();
+  const downloadTargets = new Map<string, string>();
+  for (const project of configuredProjects) {
+    for (const service of project.services) {
+      if (!isSwaggerFileSource(service.source)) continue;
+      const tag = `${project.name}/${service.name}`;
+      const inputPath = resolveSwaggerInputPath({
+        configDirectory: cwd,
+        swaggerRoot,
+        projectId: project.name,
+        service,
+      });
+      const identity = await bestEffortPhysicalIdentity(inputPath);
+      const consumers = fileSources.get(identity) ?? [];
+      consumers.push(tag);
+      fileSources.set(identity, consumers);
+    }
+  }
+  for (const project of downloadProjects) {
+    for (const service of project.services) {
+      if (!isSwaggerFileSource(service.source)) {
+        const tag = `${project.name}/${service.name}`;
+        const outputPath = resolve(swaggerRoot, project.name, `${service.name}.json`);
+        downloadTargets.set(await bestEffortPhysicalIdentity(outputPath), tag);
+      }
+    }
+  }
+
+  for (const [identity, consumers] of fileSources) {
+    const producer = downloadTargets.get(identity);
+    if (producer) {
+      throw new Error(
+        `远程 source ${producer} 的缓存会覆盖本地 source ${consumers.join(", ")}：${identity}`,
+      );
+    }
+  }
+}
+
 interface SourceResult {
   project: string;
   service: string;
@@ -130,14 +197,19 @@ interface SourceResult {
   status?: number;
 }
 
-async function validateJsonFile(path: string): Promise<number> {
+async function validateJsonFile(path: string, maxBytes: number): Promise<number> {
+  const stats = await stat(path);
+  if (!stats.isFile()) throw new Error("不是普通文件或指向普通文件的 symlink");
+  if (stats.size > maxBytes) {
+    throw new Error(`超过 maxSwaggerBytes (${formatBytes(maxBytes)})`);
+  }
   const text = await readFile(path, "utf8");
   try {
-    JSON.parse(text);
+    parseJsonInput(text);
   } catch (error) {
     throw new Error(`JSON 无效：${error instanceof Error ? error.message : String(error)}`);
   }
-  return (await stat(path)).size;
+  return stats.size;
 }
 
 /** 同目录临时文件 + rename，避免下载中断留下半个 JSON 缓存。 */
@@ -157,8 +229,9 @@ async function processFileSource(options: {
   swaggerRoot: string;
   project: ProjectConfig;
   service: ServiceConfig;
+  maxBytes: number;
 }): Promise<SourceResult> {
-  const { cwd, swaggerRoot, project, service } = options;
+  const { cwd, swaggerRoot, project, service, maxBytes } = options;
   const inputPath = resolveSwaggerInputPath({
     configDirectory: cwd,
     swaggerRoot,
@@ -166,7 +239,7 @@ async function processFileSource(options: {
     service,
   });
   try {
-    const bytes = await validateJsonFile(inputPath);
+    const bytes = await validateJsonFile(inputPath, maxBytes);
     console.log(
       `  [✓] ${project.name}/${service.name} — ${projectLabel(project)} / ${serviceLabel(service)} → file:${inputPath} (${formatBytes(bytes)})`,
     );
@@ -197,20 +270,22 @@ async function processUrlSource(options: {
   project: ProjectConfig;
   service: ServiceConfig;
   timeoutMs: number;
+  maxBytes: number;
   offline: boolean;
   dryRun: boolean;
 }): Promise<SourceResult> {
-  const { swaggerRoot, project, service, timeoutMs, offline, dryRun } = options;
+  const { swaggerRoot, project, service, timeoutMs, maxBytes, offline, dryRun } = options;
   if (isSwaggerFileSource(service.source)) {
     throw new Error("[genapi] internal: processUrlSource received source.file");
   }
   const tag = `${project.name}/${service.name}`;
   const url = service.source.url;
+  const displayUrl = formatSwaggerUrlForLog(url);
   const outputPath = resolve(swaggerRoot, project.name, `${service.name}.json`);
 
   // dry-run 是显式 CLI 行为，优先于 online/offline：远程来源永远不访问网络或缓存。
   if (dryRun) {
-    console.log(`  [dry] ${tag} → ${url} => ${outputPath}`);
+    console.log(`  [dry] ${tag} → ${displayUrl} => ${outputPath}`);
     return {
       project: project.name,
       service: service.name,
@@ -222,7 +297,7 @@ async function processUrlSource(options: {
 
   if (offline) {
     try {
-      const bytes = await validateJsonFile(outputPath);
+      const bytes = await validateJsonFile(outputPath, maxBytes);
       console.log(`  [✓] ${tag} — cache:${outputPath} (${formatBytes(bytes)})`);
       return {
         project: project.name,
@@ -246,8 +321,8 @@ async function processUrlSource(options: {
     }
   }
 
-  process.stdout.write(`  [..] ${tag} → ${url} ... `);
-  const response = await fetchSwaggerJson({ source: service.source, timeoutMs });
+  process.stdout.write(`  [..] ${tag} → ${displayUrl} ... `);
+  const response = await fetchSwaggerJson({ source: service.source, timeoutMs, maxBytes });
   if (!response.ok || response.text === undefined) {
     const error = response.error ?? "unknown error";
     console.log(`FAIL — ${error}`);
@@ -297,6 +372,13 @@ async function main(): Promise<void> {
   const cwd = process.cwd();
   const config = await loadConfig(cwd);
   validateConfig(config);
+  const configuredProjects = new Set(config.projects.map((project) => project.name));
+  const unknownProjects = [
+    ...new Set(cli.only.filter((project) => !configuredProjects.has(project))),
+  ].sort();
+  if (unknownProjects.length > 0) {
+    throw new Error(`--only 包含未知 project：${unknownProjects.join(", ")}`);
+  }
   const selected = cli.only.length === 0 ? null : new Set(cli.only);
   const projects = selected
     ? config.projects.filter((project) => selected.has(project.name))
@@ -306,7 +388,11 @@ async function main(): Promise<void> {
   }
 
   const swaggerRoot = resolve(cwd, config.outputDir);
+  const maxBytes = config.maxSwaggerBytes ?? DEFAULT_MAX_SWAGGER_BYTES;
   const offline = config.mode === "offline";
+  if (!offline && !cli.dryRun) {
+    await assertNoDownloadSourceCollisions(cwd, swaggerRoot, config.projects, projects);
+  }
   const total = projects.reduce((sum, project) => sum + project.services.length, 0);
   console.log(
     `▶ 目标项目: ${projects.map(projectLabel).join(", ")}\n▶ 共 ${total} 个 OpenAPI source${cli.dryRun ? "（dry-run）" : offline ? "（offline）" : ""}`,
@@ -317,12 +403,13 @@ async function main(): Promise<void> {
     for (const service of project.services) {
       results.push(
         isSwaggerFileSource(service.source)
-          ? await processFileSource({ cwd, swaggerRoot, project, service })
+          ? await processFileSource({ cwd, swaggerRoot, project, service, maxBytes })
           : await processUrlSource({
               swaggerRoot,
               project,
               service,
               timeoutMs: config.timeoutMs,
+              maxBytes,
               offline,
               dryRun: cli.dryRun,
             }),

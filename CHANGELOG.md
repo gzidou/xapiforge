@@ -6,7 +6,9 @@ All notable changes to xapiforge are documented here.
 
 - Added the breaking genapi v2 contract: required `services[].source.file|url`, canonical `SchemasByService`/`SchemaOf`, and the explicit `service-namespace`, `flat-strict`, and `canonical-only` export strategies with strict collision diagnostics.
 - Added deterministic manifests, read-only `--check`, generation locking, transactional project replacement, stale-file cleanup, and interrupted-transaction recovery.
-- Added strict unknown-field and internal `$ref` validation, JSON-safe canonicalization, and a deeply frozen normalized document with a mutation-safe clone for `openapi-typescript`.
+- Added strict unknown-field and semantic internal `$ref` validation, JSON-safe canonicalization, and a deeply frozen normalized document with a mutation-safe/literal-ref-safe view for `openapi-typescript`.
+- Hardened genapi against stalled or oversized response bodies, oversized local inputs, malformed PathItems/references, prototype-like schema/tag names, generated-comment injection, input/output overlap, cache/source collisions, invalid CLI selections, sensitive URL query logging, abnormal output nodes, and stale/active lock edge cases.
+- Added UTF-8 BOM support, explicit programmatic `configDirectory`, accurate multi-tag and referenced-PathItem endpoint counts, and a published Node.js `>=20.19` requirement.
 - Added two intentional v2 client initialization forms: simple `NetConfig` for one shared runtime endpoint, and layered `service override > defaults` for per-service runtime boundaries.
 - Added opt-in standard runtime enum maps, explicit Flags handling, metadata validation, and a runnable legacy enum service hook; framework-specific normalization remains outside the generator default path.
 - Removed `AllSchemas`, legacy Swagger URL fragments, root `namespacePrefixAliases`, and compatibility switches; v2 intentionally has no legacy configuration path.

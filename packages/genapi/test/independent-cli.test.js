@@ -15,6 +15,7 @@ test("published package carries its compatible TypeScript runtime", async () => 
   assert.equal(packageJson.dependencies.esbuild, "0.28.1");
   assert.equal(packageJson.dependencies["openapi-typescript"], "7.13.0");
   assert.equal(packageJson.dependencies.typescript, "5.9.3");
+  assert.equal(packageJson.engines.node, ">=20.19");
 });
 
 test("CLI generates types without consumer-level dependency binaries", async () => {
@@ -103,6 +104,15 @@ test("CLI generates types without consumer-level dependency binaries", async () 
       // consumer-level node_modules/.bin entry.
       env: { ...process.env, PATH: "/usr/bin:/bin" },
     };
+
+    const help = spawnSync(process.execPath, [cliPath, "--help"], spawnOptions);
+    assert.equal(help.status, 0, `${help.stdout}\n${help.stderr}`);
+    assert.match(help.stdout, /Usage: xapiforge/);
+    const missingProject = spawnSync(process.execPath, [cliPath], spawnOptions);
+    assert.equal(missingProject.status, 2, `${missingProject.stdout}\n${missingProject.stderr}`);
+    const unknownProject = spawnSync(process.execPath, [cliPath, "unknown"], spawnOptions);
+    assert.equal(unknownProject.status, 2, `${unknownProject.stdout}\n${unknownProject.stderr}`);
+    assert.match(unknownProject.stderr, /未找到项目: unknown/);
 
     const fetchResult = spawnSync(process.execPath, [fetchCliPath], spawnOptions);
     assert.equal(fetchResult.status, 0, `${fetchResult.stdout}\n${fetchResult.stderr}`);

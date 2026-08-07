@@ -6,6 +6,18 @@
  */
 
 import type { SwaggerUrlSource } from "./swagger-source.js";
+import { normalizeJsonInputText, parseJsonInput } from "./json-input.js";
+
+const MAX_TIMEOUT_MS = 2_147_483_647;
+export const DEFAULT_MAX_SWAGGER_BYTES = 64 * 1024 * 1024;
+
+export function isValidFetchTimeout(value: unknown): value is number {
+  return Number.isInteger(value) && Number(value) > 0 && Number(value) <= MAX_TIMEOUT_MS;
+}
+
+export function isValidSwaggerSize(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) > 0;
+}
 
 export interface FetchOptions {
   source: SwaggerUrlSource;
@@ -13,6 +25,8 @@ export interface FetchOptions {
   timeoutMs: number;
   /** 是否在 5xx 或网络错误后重试一次，默认 true。 */
   retryOnce?: boolean;
+  /** 解压后的 JSON body 最大字节数，默认 64 MiB。 */
+  maxBytes?: number;
 }
 
 export interface FetchResult {
@@ -24,11 +38,135 @@ export interface FetchResult {
   status?: number;
 }
 
-async function fetchOnce(url: string, timeoutMs: number): Promise<Response> {
+class DownloadAttemptError extends Error {
+  constructor(
+    message: string,
+    readonly retryable: boolean,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = "DownloadAttemptError";
+  }
+}
+
+function discardResponse(response: Response): void {
+  // 丢弃失败或底层 stream.cancel() 卡住，都不能覆盖/阻塞真正的响应错误。
+  try {
+    void response.body?.cancel().catch(() => undefined);
+  } catch {
+    // 非标准 fetch 实现即使同步抛错，也保留原始响应错误。
+  }
+}
+
+function tooLargeError(maxBytes: number): DownloadAttemptError {
+  return new DownloadAttemptError(`Swagger 超过最大允许大小 ${formatBytes(maxBytes)}`, false);
+}
+
+async function readResponseText(
+  response: Response,
+  signal: AbortSignal,
+  maxBytes: number,
+): Promise<string> {
+  const contentLength = response.headers.get("content-length");
+  if (contentLength !== null && /^\d+$/.test(contentLength) && Number(contentLength) > maxBytes) {
+    discardResponse(response);
+    throw tooLargeError(maxBytes);
+  }
+  if (response.body === null) return "";
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  let rejectAbort: ((reason: Error) => void) | undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    rejectAbort = reject;
+  });
+  const onAbort = (): void => rejectAbort?.(new Error("response body aborted"));
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    while (true) {
+      const result = await Promise.race([reader.read(), aborted]);
+      if (result.done) break;
+      totalBytes += result.value.byteLength;
+      if (totalBytes > maxBytes) {
+        void reader.cancel().catch(() => undefined);
+        throw tooLargeError(maxBytes);
+      }
+      chunks.push(result.value);
+    }
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+    if (signal.aborted) void reader.cancel().catch(() => undefined);
+    try {
+      reader.releaseLock();
+    } catch {
+      // 非标准或仍有 pending read 的 stream 不得覆盖超时/大小错误。
+    }
+  }
+  return normalizeJsonInputText(
+    Buffer.concat(
+      chunks.map((chunk) => Buffer.from(chunk)),
+      totalBytes,
+    ).toString("utf8"),
+  );
+}
+
+async function downloadAttempt(
+  url: string,
+  timeoutMs: number,
+  maxBytes: number,
+): Promise<{ text: string; status: number }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, { signal: controller.signal });
+    let response: Response;
+    try {
+      response = await fetch(url, { signal: controller.signal });
+    } catch (cause) {
+      const message = controller.signal.aborted
+        ? `请求超时 (${timeoutMs}ms)`
+        : cause instanceof Error
+          ? cause.message
+          : String(cause);
+      throw new DownloadAttemptError(message, true, { cause });
+    }
+
+    if (!response.ok) {
+      discardResponse(response);
+      throw new DownloadAttemptError(
+        `HTTP ${response.status} ${response.statusText}`,
+        response.status >= 500,
+      );
+    }
+
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!contentType.toLowerCase().includes("json")) {
+      discardResponse(response);
+      throw new DownloadAttemptError(`Content-Type 不是 JSON: ${contentType || "<empty>"}`, false);
+    }
+
+    let text: string;
+    try {
+      text = await readResponseText(response, controller.signal, maxBytes);
+    } catch (cause) {
+      if (cause instanceof DownloadAttemptError) throw cause;
+      const message = controller.signal.aborted
+        ? `请求超时 (${timeoutMs}ms)`
+        : cause instanceof Error
+          ? cause.message
+          : String(cause);
+      throw new DownloadAttemptError(message, true, { cause });
+    }
+    try {
+      parseJsonInput(text);
+    } catch (cause) {
+      throw new DownloadAttemptError(
+        `响应不是合法 JSON: ${cause instanceof Error ? cause.message : String(cause)}`,
+        false,
+        { cause },
+      );
+    }
+    return { text, status: response.status };
   } finally {
     clearTimeout(timer);
   }
@@ -39,40 +177,25 @@ export async function downloadJson(
   url: string,
   timeoutMs: number,
   retryOnce = true,
+  maxBytes = DEFAULT_MAX_SWAGGER_BYTES,
 ): Promise<{ text: string; status: number }> {
+  if (!isValidFetchTimeout(timeoutMs)) {
+    throw new TypeError(`timeoutMs 必须是 1..${MAX_TIMEOUT_MS} 范围内的整数毫秒`);
+  }
+  if (!isValidSwaggerSize(maxBytes)) {
+    throw new TypeError("maxBytes 必须是正安全整数");
+  }
   const attempts = retryOnce ? 2 : 1;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    let response: Response;
     try {
-      response = await fetchOnce(url, timeoutMs);
+      return await downloadAttempt(url, timeoutMs, maxBytes);
     } catch (error) {
-      if (attempt < attempts - 1) {
+      if (error instanceof DownloadAttemptError && error.retryable && attempt < attempts - 1) {
         await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, 500));
         continue;
       }
       throw error;
     }
-
-    if (!response.ok) {
-      const error = new Error(`HTTP ${response.status} ${response.statusText}`);
-      if (response.status >= 500 && attempt < attempts - 1) {
-        await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, 500));
-        continue;
-      }
-      throw error;
-    }
-
-    const contentType = response.headers.get("content-type") ?? "";
-    if (!contentType.toLowerCase().includes("json")) {
-      throw new Error(`Content-Type 不是 JSON: ${contentType || "<empty>"}`);
-    }
-    const text = await response.text();
-    try {
-      JSON.parse(text);
-    } catch (error) {
-      throw new Error(`响应不是合法 JSON: ${(error as Error).message}`);
-    }
-    return { text, status: response.status };
   }
 
   // 循环的每条路径都会 return/throw；保留显式保护，避免未来修改形成静默 undefined。
@@ -83,7 +206,12 @@ export async function downloadJson(
 export async function fetchSwaggerJson(options: FetchOptions): Promise<FetchResult> {
   const url = options.source.url;
   try {
-    const { text } = await downloadJson(url, options.timeoutMs, options.retryOnce);
+    const { text } = await downloadJson(
+      url,
+      options.timeoutMs,
+      options.retryOnce,
+      options.maxBytes ?? DEFAULT_MAX_SWAGGER_BYTES,
+    );
     return {
       ok: true,
       url,

@@ -30,7 +30,29 @@ export function canonicalizeOpenApi<T>(value: T): T {
       if (ancestors.has(current)) throw new Error("[genapi] OpenAPI 文档不能包含循环引用");
       ancestors.add(current);
       try {
-        return current.map((item, index) => visit(item, `${path}[${index}]`));
+        const ownKeys = Reflect.ownKeys(current);
+        if (ownKeys.length !== current.length + 1) {
+          throw new Error(`[genapi] OpenAPI 数组包含空洞或非 JSON 属性：${path}`);
+        }
+        for (const key of ownKeys) {
+          if (key === "length") continue;
+          const index = typeof key === "string" ? Number(key) : Number.NaN;
+          if (
+            !Number.isInteger(index) ||
+            index < 0 ||
+            index >= current.length ||
+            String(index) !== key
+          ) {
+            throw new Error(`[genapi] OpenAPI 数组包含非 JSON 属性：${path}`);
+          }
+        }
+        return Array.from({ length: current.length }, (_, index) => {
+          const descriptor = Object.getOwnPropertyDescriptor(current, String(index));
+          if (!descriptor || !descriptor.enumerable || !("value" in descriptor)) {
+            throw new Error(`[genapi] OpenAPI 数组包含空洞或非数据项：${path}[${index}]`);
+          }
+          return visit(descriptor.value, `${path}[${index}]`);
+        });
       } finally {
         ancestors.delete(current);
       }
@@ -46,10 +68,22 @@ export function canonicalizeOpenApi<T>(value: T): T {
     ancestors.add(current);
     try {
       const result: UnknownRecord = {};
-      for (const key of Object.keys(current).sort(lexicalCompare)) {
+      const entries: Array<[string, unknown]> = [];
+      for (const key of Reflect.ownKeys(current)) {
+        if (typeof key !== "string") {
+          throw new Error(`[genapi] OpenAPI 对象包含 Symbol key：${path}`);
+        }
+        const descriptor = Object.getOwnPropertyDescriptor(current, key);
+        if (!descriptor?.enumerable || !("value" in descriptor)) {
+          throw new Error(`[genapi] OpenAPI 对象包含非 JSON 属性：${path}.${key}`);
+        }
+        entries.push([key, descriptor.value]);
+      }
+      entries.sort(([left], [right]) => lexicalCompare(left, right));
+      for (const [key, item] of entries) {
         // defineProperty 能把 __proto__ 当普通 JSON key 保留，而不是改写 result 的原型。
         Object.defineProperty(result, key, {
-          value: visit(current[key], `${path}.${key}`),
+          value: visit(item, `${path}.${key}`),
           enumerable: true,
           configurable: true,
           writable: true,

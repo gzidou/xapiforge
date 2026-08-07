@@ -121,6 +121,7 @@ interface ProjectTypeExportConfig {
 
 interface XApiForgeConfig {
   timeoutMs: number;
+  maxSwaggerBytes?: number; // 默认 64 MiB
   outputDir: string;
   genOutputDir?: string;
   mode?: "online" | "offline";
@@ -152,16 +153,16 @@ read source
   → structuredClone
   → transformSwagger
   → normalized OpenAPI 3.x validation
-  → internal $ref validation
   → validate JSON values + canonicalize object keys
   → deep-freeze authoritative normalized document
-  ├─ openapi-typescript
+  → internal $ref validation + PathItem reference index
+  ├─ openapi-typescript isolated safe view
   ├─ endpoint metadata
   ├─ schema export inventory
   └─ canonical manifest hash
 ```
 
-所有下游视图必须复用同一份深度冻结的 document，不能分别重新读取或分别跑 hook。`openapi-typescript` 的 Redocly bundler 会改写传入对象，因此只给该第三方一个 normalized document 的一次性 `structuredClone`；这不是第二次规范化，其他下游仍读取权威冻结对象。
+所有下游视图必须复用同一份深度冻结的 document，不能分别重新读取或分别跑 hook。`openapi-typescript` 的 Redocly bundler 会改写传入对象，还会把 `example`、`default`、vendor extension 等任意 JSON 数据里的 `$ref` 误当成语义引用。因此只给该第三方一个从 normalized document 派生的一次性安全视图：仅剔除 literal JSON 内的 `$ref`、`$dynamicRef`、`$recursiveRef`、`$anchor` key；schema、response、PathItem 等语义位置不变。这不是第二次规范化，endpoint、alias、manifest 和 hook context 仍读取权威冻结对象。
 
 ### 6.1 canonical 化
 
@@ -315,7 +316,7 @@ createDemoClient({
 service > project > root
 ```
 
-service 写 `{}` 表示显式禁用继承。hook 后的 document 必须仍是 OpenAPI 3.x，且只允许内部 `$ref`。业务特殊格式由业务 hook 处理，内核不包含 ABP、SpringBoot 或其他框架特判。
+service 写 `{}` 表示显式禁用继承。hook 后的 document 必须仍是 OpenAPI 3.x，且语义位置只允许可解析的内部 `$ref`。业务 example/default/value/vendor extension 是任意 JSON，其中同名 key 不参与引用校验。当前依赖会把语义位置的 `$dynamicRef`/`$recursiveRef` 静默降级为 `unknown`，因此内核明确拒绝这两种引用，而不是生成虚假的弱类型。业务特殊格式由业务 hook 处理，内核不包含 ABP、SpringBoot 或其他框架特判。
 
 ## 11. 原子生成
 
@@ -387,5 +388,7 @@ prepare every service in memory
 
 - OpenAPI 数组顺序变化可能改变输出；数组可能有语义，生成器不会擅自排序。
 - external `$ref` 暂不支持。
+- `$dynamicRef` / `$recursiveRef` 暂不支持；必须先由业务 hook 规范化为普通内部 `$ref`。
+- 单个 Swagger 默认最多 64 MiB；确有更大规范时必须显式提高 `maxSwaggerBytes`，避免远程或本地异常输入无上限占用内存。
 - hook 代码本身必须确定；hook 若注入时间、随机数或环境差异，生成器无法替它保证稳定。
 - openapi-typescript 版本变化可能改变格式或类型；manifest 固定记录版本，升级必须作为显式变更评审。

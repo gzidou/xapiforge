@@ -1,4 +1,4 @@
-import { lexicalCompare, pascalCaseConfigId, safeTypeAlias } from "./naming.js";
+import { lexicalCompare, pascalCaseConfigId, safeCommentText, safeTypeAlias } from "./naming.js";
 
 /** schema full name 前缀分组；所在层级由导出策略决定。 */
 export interface NamespaceRule {
@@ -129,7 +129,7 @@ function collectConvenienceExports(options: {
     if (!service) {
       throw new Error(`[genapi] 显式 alias 指向不存在的 service：${rule.service}`);
     }
-    if (!(rule.schema in service.schemas)) {
+    if (!Object.prototype.hasOwnProperty.call(service.schemas, rule.schema)) {
       throw new Error(
         `[genapi] 显式 alias 指向不存在的 schema：${rule.service}/${rule.schema} → ${rule.exportAs}`,
       );
@@ -223,10 +223,10 @@ function renderFlatExports(lines: string[], entries: readonly ExportEntry[]): vo
   for (const namespace of [...namespaces.keys()].sort(lexicalCompare)) {
     const group = namespaces.get(namespace)!;
     group.sort((left, right) => lexicalCompare(left.alias, right.alias));
-    lines.push(`/** project-level schema prefix namespace ${namespace} */`);
+    lines.push(`/** project-level schema prefix namespace ${safeCommentText(namespace)} */`);
     lines.push(`export namespace ${namespace} {`);
     for (const entry of group) {
-      lines.push(`  /** ${entry.service}/${entry.full} */`);
+      lines.push(`  /** ${safeCommentText(`${entry.service}/${entry.full}`)} */`);
       lines.push(
         `  export type ${entry.alias} = SchemaOf<${JSON.stringify(entry.service)}, ${JSON.stringify(entry.full)}>;`,
       );
@@ -236,7 +236,7 @@ function renderFlatExports(lines: string[], entries: readonly ExportEntry[]): vo
   }
 
   for (const entry of direct) {
-    lines.push(`/** ${entry.service}/${entry.full} */`);
+    lines.push(`/** ${safeCommentText(`${entry.service}/${entry.full}`)} */`);
     lines.push(
       `export type ${entry.alias} = SchemaOf<${JSON.stringify(entry.service)}, ${JSON.stringify(entry.full)}>;`,
     );
@@ -263,10 +263,12 @@ function renderServiceNamespaces(
       nested.set(entry.namespace, group);
     }
 
-    lines.push(`/** ${service.name} service schemas；source 位置变化不会改变此 namespace。 */`);
+    lines.push(
+      `/** ${safeCommentText(service.name)} service schemas；source 位置变化不会改变此 namespace。 */`,
+    );
     lines.push(`export namespace ${namespaceName} {`);
     for (const entry of direct) {
-      lines.push(`  /** ${entry.full} */`);
+      lines.push(`  /** ${safeCommentText(entry.full)} */`);
       lines.push(
         `  export type ${entry.alias} = SchemaOf<${JSON.stringify(entry.service)}, ${JSON.stringify(entry.full)}>;`,
       );
@@ -274,10 +276,10 @@ function renderServiceNamespaces(
     for (const namespace of [...nested.keys()].sort(lexicalCompare)) {
       const group = nested.get(namespace)!;
       group.sort((left, right) => lexicalCompare(left.alias, right.alias));
-      lines.push(`  /** schema prefix namespace ${namespace} */`);
+      lines.push(`  /** schema prefix namespace ${safeCommentText(namespace)} */`);
       lines.push(`  export namespace ${namespace} {`);
       for (const entry of group) {
-        lines.push(`    /** ${entry.full} */`);
+        lines.push(`    /** ${safeCommentText(entry.full)} */`);
         lines.push(
           `    export type ${entry.alias} = SchemaOf<${JSON.stringify(entry.service)}, ${JSON.stringify(entry.full)}>;`,
         );
@@ -305,7 +307,7 @@ export function renderApiTypes(options: RenderApiTypesOptions): string {
     "/**",
     ` * @${options.projectId}/api-types — 自动生成，别手改`,
     " *",
-    ` * 项目：${options.projectDisplay}（${options.projectId}），service 数：${services.length}`,
+    ` * 项目：${safeCommentText(options.projectDisplay)}（${options.projectId}），service 数：${services.length}`,
     ` * 导出策略：${strategy}`,
     " * schema identity 固定为 service + full schema name；source 位置与配置顺序不参与命名。",
     " */",

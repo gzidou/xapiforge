@@ -9,6 +9,7 @@ import { defineConfig } from "@xapiforge/genapi";
 
 export default defineConfig({
   timeoutMs: 15_000,
+  maxSwaggerBytes: 64 * 1024 * 1024,
   outputDir: "swagger",
   genOutputDir: "src/api/gen",
   mode: "online",
@@ -62,6 +63,7 @@ const remoteSource = { url: "https://api.example.test/openapi.json" };
 
 - `service.name` 是稳定身份，决定生成文件名、客户端 key 和类型 namespace。
 - `source.file` 是磁盘位置；相对路径以运行 CLI 的项目根目录为基准。
+- 程序化调用 `generate/generateMany` 时，可用 `configDirectory` 明确指定配置目录；省略时仍以当前工作目录为基准。
 - `source.url` 是完整 HTTP(S) URL，不再拼接 host、port 或 path。
 - 修改文件名、目录或 URL，不会改变 service/type 身份。
 
@@ -70,9 +72,16 @@ const remoteSource = { url: "https://api.example.test/openapi.json" };
 - `source.file`：直接校验 JSON，不复制文件。
 - online 的 `source.url`：下载到 `outputDir/<project>/<service>.json`。
 - offline 的 `source.url`：读取上述缓存，不访问网络。
-- `--dry-run`：本地来源仍校验，远程来源只打印精确 URL 和缓存路径，不发请求、不写缓存。
-- 网络错误与 HTTP 5xx 默认重试一次；4xx、错误 Content-Type 或非法 JSON 不重试。
+- `--dry-run`：本地来源仍校验，远程来源只打印 URL 和缓存路径，不发请求、不写缓存；常见 token/signature/key 类 query 值会在日志中遮盖，请求本身仍使用原 URL。
+- `--only` 缺值、空值或包含未知 project 时直接失败，不会退化成全量下载或忽略拼写错误。
+- 网络错误、响应体读取失败与 HTTP 5xx 默认重试一次；单次 `timeoutMs` 覆盖响应头和完整 JSON body。4xx、错误 Content-Type、超出大小限制或非法 JSON 不重试。
+- `maxSwaggerBytes` 可选，默认 64 MiB，同时约束 URL 解压后响应、离线缓存、本地 `source.file` 和生成阶段输入；服务端缺少或伪造 `Content-Length` 时仍按实际流式字节数停止。
 - 下载缓存以同目录临时文件加 rename 替换，失败不会留下半个 JSON。
+- UTF-8 BOM 可被本地文件和远程 JSON 接受；online 下载不得覆盖任何 project 明确配置的 `source.file`。
+
+生成前还会拒绝位于 project 输出目录内的 Swagger 输入，包括其它 project 引用的文件，避免事务替换生成目录时误删输入。
+
+引用校验会区分 OpenAPI 语义对象和任意 JSON 数据：schema、response、PathItem 等位置只允许可解析的内部 `$ref`；`example`、`default`、Example Object 的 `value` 和 `x-*` 扩展内恰好叫 `$ref` 的业务字段按普通数据处理。生成器会为 `openapi-typescript` 建立隔离安全视图，避免其 Redocly bundler 误解析这些业务字段，权威规范化文档不会被改写。
 
 ## schema 的 canonical 身份
 

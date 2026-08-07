@@ -28,6 +28,18 @@ export function isSwaggerUrlSource(source: SwaggerSource): source is SwaggerUrlS
   return typeof source.url === "string";
 }
 
+const SENSITIVE_QUERY_KEY =
+  /(?:^|[-_])(?:api[-_]?key|auth(?:orization)?|credential|password|secret|sig(?:nature)?|token)(?:$|[-_])/i;
+
+/** 请求仍使用原 URL；日志只遮盖常见凭证型 query 参数。 */
+export function formatSwaggerUrlForLog(url: string): string {
+  const parsed = new URL(url);
+  for (const key of [...parsed.searchParams.keys()]) {
+    if (SENSITIVE_QUERY_KEY.test(key)) parsed.searchParams.set(key, "***");
+  }
+  return parsed.toString();
+}
+
 /**
  * 解析生成阶段实际读取的文件。
  *

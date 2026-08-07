@@ -21,6 +21,9 @@
     "codegen",
     "cli"
   ],
+  "engines": {
+    "node": ">=20.19"
+  },
   "main": "./dist/index.js",
   "types": "./src/index.ts",
   "exports": {

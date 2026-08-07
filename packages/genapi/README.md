@@ -2,6 +2,8 @@
 
 OpenAPI-to-TypeScript client generator for xapiforge projects. v2 keeps every service's `paths` and `components` isolated, generates deterministic manifests, and replaces project output transactionally.
 
+Requires Node.js 20.19 or newer.
+
 ## Install
 
 Install the generator as a development dependency. Generated clients use `@xapiforge/core`, which owns the `openapi-fetch` runtime dependency:
@@ -31,6 +33,7 @@ import { defineConfig } from "@xapiforge/genapi";
 
 export default defineConfig({
   timeoutMs: 15_000,
+  maxSwaggerBytes: 64 * 1024 * 1024,
   outputDir: "swagger",
   genOutputDir: "src/api/gen",
   projects: [
@@ -53,6 +56,8 @@ export default defineConfig({
 
 Project and service IDs must use kebab-case. Every service requires either `source.file` or `source.url`; URL sources use `swagger/<project>/<service>.json` as their offline cache.
 
+`maxSwaggerBytes` is optional and defaults to 64 MiB. It limits remote response streams, offline caches, local files, and generation inputs before they can consume unbounded memory.
+
 ## Generate
 
 ```bash
@@ -62,6 +67,20 @@ pnpm run generate:api -- --check
 ```
 
 `--check` is read-only and returns non-zero when generated output has drifted.
+
+For programmatic generation, relative `source.file` paths default to `process.cwd()`. Pass `configDirectory` to resolve them from a different configuration directory:
+
+```typescript
+await generate({
+  xapiForgeConfig: config,
+  projectId: "myapp",
+  swaggerDir: "swagger",
+  outputDir: "src/api/gen",
+  configDirectory: "/absolute/path/to/config"
+});
+```
+
+Semantic OpenAPI references must be resolvable internal `$ref` values. Ref-like keys inside arbitrary JSON data such as `example`, `default`, Example Object `value`, or `x-*` extensions remain literal business data and are isolated from Redocly's reference resolver.
 
 ## Multi-service runtime config
 

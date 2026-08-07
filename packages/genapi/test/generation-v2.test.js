@@ -1,13 +1,23 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { build } from "esbuild";
+import { build, transform } from "esbuild";
+import ts from "typescript";
 
 import {
   downloadJson,
@@ -103,12 +113,43 @@ test("validateConfig rejects unsafe IDs, generated-name collisions, and invalid 
     /必须是非保留的 TypeScript 标识符/,
   );
   assert.throws(
+    () =>
+      validateConfig(
+        config([service("base")], {
+          typeExports: {
+            aliases: [{ service: "base", schema: "Source", exportAs: "as" }],
+          },
+        }),
+      ),
+    /必须是非保留的 TypeScript 标识符/,
+  );
+  assert.throws(
     () => validateConfig({ ...config([service("base")]), defaultPath: "/swagger.json" }),
     /根配置 包含 v2 已移除字段：defaultPath/,
   );
   assert.throws(
     () => validateConfig({ ...config([service("base")]), timeotMs: 1 }),
     /根配置 包含未知字段：timeotMs/,
+  );
+  assert.throws(
+    () => validateConfig({ ...config([service("base")]), timeoutMs: 0.5 }),
+    /timeoutMs 必须是 1\.\.2147483647 范围内的整数毫秒/,
+  );
+  assert.throws(
+    () => validateConfig({ ...config([service("base")]), timeoutMs: 2_147_483_648 }),
+    /timeoutMs 必须是 1\.\.2147483647 范围内的整数毫秒/,
+  );
+  assert.throws(
+    () => validateConfig({ ...config([service("base")]), maxSwaggerBytes: 0 }),
+    /maxSwaggerBytes 必须是正安全整数/,
+  );
+  assert.throws(
+    () => validateConfig({ ...config([service("base")]), maxSwaggerBytes: 1.5 }),
+    /maxSwaggerBytes 必须是正安全整数/,
+  );
+  assert.throws(
+    () => validateConfig(config([service("base", { source: { file: "swagger\0/base.json" } })])),
+    /source\.file 不得包含 NUL 字符/,
   );
   assert.throws(
     () =>
@@ -135,6 +176,17 @@ test("validateConfig rejects unsafe IDs, generated-name collisions, and invalid 
   assert.throws(
     () =>
       validateConfig(
+        config([
+          service("base", {
+            source: { url: "https://example.test/openapi.json#not-sent" },
+          }),
+        ]),
+      ),
+    /source\.url 不得包含 fragment/,
+  );
+  assert.throws(
+    () =>
+      validateConfig(
         config([service("identity"), service("billing")], {
           typeExports: {
             strategy: "flat-strict",
@@ -147,6 +199,27 @@ test("validateConfig rejects unsafe IDs, generated-name collisions, and invalid 
       ),
     /导出目标 User 重复/,
   );
+});
+
+test("programmatic generation options fail closed on typos and non-boolean safety flags", async () => {
+  await withTempProject(async (root) => {
+    await writeSwagger(root, "base", document());
+    const options = {
+      xapiForgeConfig: config([service("base")]),
+      projectId: "demo",
+      swaggerDir: "swagger",
+      outputDir: "generated",
+    };
+
+    await assert.rejects(generate({ ...options, chek: true }), /包含未知字段：chek/);
+    await assert.rejects(generate({ ...options, check: "true" }), /check 必须是 boolean/);
+    await assert.rejects(
+      generate({ ...options, emitApiTypes: "false" }),
+      /emitApiTypes 必须是 boolean/,
+    );
+    await assert.rejects(generate({ ...options, templateDir: "legacy" }), /templateDir/);
+    assert.equal(existsSync(join(root, "generated")), false);
+  });
 });
 
 test("source.url is fetched as the exact configured URL", async () => {
@@ -207,6 +280,78 @@ test("download retries network/5xx failures but not deterministic response error
   }
 });
 
+test("download timeout and size limits cover the complete response body", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      return new Response(new ReadableStream({ start() {} }), {
+        headers: { "content-type": "application/json" },
+      });
+    };
+    await assert.rejects(
+      downloadJson("https://example.test/stalled-body.json", 20, false),
+      /请求超时 \(20ms\)/,
+    );
+    assert.equal(calls, 1);
+
+    globalThis.fetch = async () => ({
+      ok: false,
+      status: 503,
+      statusText: "Unavailable",
+      headers: new Headers(),
+      body: { cancel: () => new Promise(() => {}) },
+    });
+    await assert.rejects(
+      downloadJson("https://example.test/stalled-cancel.json", 100, false),
+      /HTTP 503 Unavailable/,
+    );
+
+    globalThis.fetch = async () =>
+      new Response("\ufeff{}", { headers: { "content-type": "application/json" } });
+    assert.equal((await downloadJson("https://example.test/bom.json", 1_000, false)).text, "{}");
+
+    calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      return new Response("{}", {
+        headers: { "content-length": "100", "content-type": "application/json" },
+      });
+    };
+    await assert.rejects(
+      downloadJson("https://example.test/declared-large.json", 1_000, true, 4),
+      /超过最大允许大小 4 B/,
+    );
+    assert.equal(calls, 1, "deterministic size failures must not retry");
+
+    globalThis.fetch = async () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('{"large":true}'));
+            controller.close();
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    await assert.rejects(
+      downloadJson("https://example.test/chunked-large.json", 1_000, false, 4),
+      /超过最大允许大小 4 B/,
+    );
+    await assert.rejects(
+      downloadJson("https://example.test/invalid-timeout.json", 0),
+      /timeoutMs 必须是 1\.\.2147483647 范围内的整数毫秒/,
+    );
+    await assert.rejects(
+      downloadJson("https://example.test/invalid-size.json", 1_000, false, 0),
+      /maxBytes 必须是正安全整数/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("source.file decouples service ID from filename and source relocation is output-stable", async () => {
   await withTempProject(async (root) => {
     const openapi = document({
@@ -258,6 +403,105 @@ test("source.file decouples service ID from filename and source relocation is ou
     });
     assert.equal(remoteCache.changed, false);
     assert.equal(await readFile(join(root, "generated/demo/api-types.ts"), "utf8"), baseline);
+  });
+});
+
+test("source.file resolves from configDirectory and accepts an UTF-8 BOM", async () => {
+  await withTempProject(async (root) => {
+    const configDirectory = join(root, "config");
+    const sourceDirectory = join(configDirectory, "specs");
+    await mkdir(sourceDirectory, { recursive: true });
+    await writeFile(
+      join(sourceDirectory, "backend.json"),
+      `\ufeff${JSON.stringify(document({ schemas: { ItemDto: { type: "string" } } }))}`,
+      "utf8",
+    );
+
+    const result = await generate({
+      xapiForgeConfig: config([service("base", { source: { file: "specs/backend.json" } })]),
+      projectId: "demo",
+      swaggerDir: "unused-swagger-cache",
+      outputDir: "generated",
+      configDirectory,
+    });
+    assert.equal(result.changed, true);
+    assert.match(
+      await readFile(join(root, "generated/demo/api-types.ts"), "utf8"),
+      /export type ItemDto =/,
+    );
+  });
+});
+
+test("local Swagger generation enforces maxSwaggerBytes before reading JSON", async () => {
+  await withTempProject(async (root) => {
+    await writeSwagger(root, "base", document());
+    await assert.rejects(
+      generate({
+        xapiForgeConfig: config([service("base")], {}, { maxSwaggerBytes: 8 }),
+        projectId: "demo",
+        swaggerDir: "swagger",
+        outputDir: "generated",
+      }),
+      /Swagger 超过 maxSwaggerBytes \(8\)/,
+    );
+    assert.equal(existsSync(join(root, "generated")), false);
+  });
+});
+
+test("generation rejects Swagger inputs inside the project output directory", async () => {
+  await withTempProject(async (root) => {
+    await writeSwagger(root, "base", document());
+    const sourcePath = join(root, "swagger/demo/base.json");
+
+    await assert.rejects(
+      generate({
+        xapiForgeConfig: config([service("base")]),
+        projectId: "demo",
+        swaggerDir: "swagger",
+        outputDir: "swagger",
+      }),
+      /Swagger 输入文件 位于生成输出目录内，生成会覆盖输入/,
+    );
+    assert.equal(existsSync(sourcePath), true);
+    assert.deepEqual(JSON.parse(await readFile(sourcePath, "utf8")), document());
+
+    const sharedSource = join(root, "generated/demo/shared.json");
+    await mkdir(dirname(sharedSource), { recursive: true });
+    await writeFile(sharedSource, JSON.stringify(document()), "utf8");
+    const crossProjectConfig = config([service("base")]);
+    crossProjectConfig.projects.push({
+      name: "holder",
+      displayName: "Source holder",
+      services: [service("shared", { source: { file: "generated/demo/shared.json" } })],
+    });
+    await assert.rejects(
+      generate({
+        xapiForgeConfig: crossProjectConfig,
+        projectId: "demo",
+        swaggerDir: "swagger",
+        outputDir: "generated",
+      }),
+      /holder\/shared Swagger 输入文件 位于生成输出目录内/,
+    );
+    assert.equal(existsSync(sharedSource), true);
+
+    if (process.platform !== "win32") {
+      const aliasDirectory = join(root, "input-alias");
+      await mkdir(aliasDirectory);
+      await symlink(sharedSource, join(aliasDirectory, "shared.json"));
+      await assert.rejects(
+        generate({
+          xapiForgeConfig: config([
+            service("base", { source: { file: "input-alias/shared.json" } }),
+          ]),
+          projectId: "demo",
+          swaggerDir: "swagger",
+          outputDir: "generated",
+        }),
+        /Swagger 输入文件物理路径 位于生成输出目录内/,
+      );
+      assert.equal(existsSync(sharedSource), true);
+    }
   });
 });
 
@@ -411,6 +655,59 @@ test("canonicalization preserves special JSON keys and rejects non-JSON hook val
       /OpenAPI 文档只能包含有限数字/,
     );
     assert.equal(existsSync(join(root, "generated-invalid-json")), false);
+
+    await assert.rejects(
+      generate({
+        xapiForgeConfig: config([service("base")], {
+          hooks: {
+            async transformSwagger(swagger) {
+              swagger.components.schemas.SpecialDto.example = new Array(1_000_000_000);
+              return swagger;
+            },
+          },
+        }),
+        projectId: "demo",
+        swaggerDir: "swagger",
+        outputDir: "generated-sparse-array",
+      }),
+      /OpenAPI 数组包含空洞或非 JSON 属性/,
+    );
+    assert.equal(existsSync(join(root, "generated-sparse-array")), false);
+
+    await assert.rejects(
+      generate({
+        xapiForgeConfig: config([service("base")], {
+          hooks: {
+            async transformSwagger(swagger) {
+              swagger.components.schemas.SpecialDto[Symbol("hidden")] = true;
+              return swagger;
+            },
+          },
+        }),
+        projectId: "demo",
+        swaggerDir: "swagger",
+        outputDir: "generated-symbol-key",
+      }),
+      /OpenAPI 对象包含 Symbol key/,
+    );
+    assert.equal(existsSync(join(root, "generated-symbol-key")), false);
+
+    await assert.rejects(
+      generate({
+        xapiForgeConfig: config([service("base")], {
+          hooks: {
+            async transformTypes() {
+              return undefined;
+            },
+          },
+        }),
+        projectId: "demo",
+        swaggerDir: "swagger",
+        outputDir: "generated-invalid-types",
+      }),
+      /transformTypes\(demo\/base\) 必须返回字符串/,
+    );
+    assert.equal(existsSync(join(root, "generated-invalid-types")), false);
   });
 });
 
@@ -476,6 +773,7 @@ test("endpoint metadata ignores path-level parameters", async () => {
       "base",
       document({
         paths: {
+          "x-generator-note": "ignored extension",
           "/items": {
             parameters: [{ in: "header", name: "x-request-id", schema: { type: "string" } }],
             get: { responses: { 200: { description: "OK" } } },
@@ -490,6 +788,207 @@ test("endpoint metadata ignores path-level parameters", async () => {
       outputDir: "generated",
     });
     assert.equal(result.totalEndpoints, 1);
+  });
+});
+
+test("endpoint count is independent from duplicate or multiple tags", async () => {
+  await withTempProject(async (root) => {
+    await writeSwagger(
+      root,
+      "base",
+      document({
+        paths: {
+          "/items": {
+            get: {
+              tags: ["Catalog", "Public", "Catalog", "__proto__", "constructor", "toString"],
+              responses: { 200: { description: "OK" } },
+            },
+          },
+        },
+      }),
+    );
+    const result = await generate({
+      xapiForgeConfig: config([service("base")]),
+      projectId: "demo",
+      swaggerDir: "swagger",
+      outputDir: "generated",
+    });
+    assert.equal(result.totalEndpoints, 1);
+    assert.match(
+      await readFile(join(root, "generated/demo/index.ts"), "utf8"),
+      /总 endpoint 数：1/,
+    );
+  });
+});
+
+test("endpoint metadata resolves internal PathItem references and local overrides", async () => {
+  await withTempProject(async (root) => {
+    const openapi = document();
+    openapi.openapi = "3.1.0";
+    openapi.components.pathItems = {
+      Shared: {
+        get: { tags: ["Shared"], responses: { 200: { description: "OK" } } },
+      },
+    };
+    openapi.paths = {
+      "/alias": { $ref: "#/components/pathItems/Shared" },
+      "/extended": {
+        $ref: "#/components/pathItems/Shared",
+        post: { responses: { 204: { description: "Created" } } },
+      },
+    };
+    await writeSwagger(root, "base", openapi);
+    const result = await generate({
+      xapiForgeConfig: config([service("base")]),
+      projectId: "demo",
+      swaggerDir: "swagger",
+      outputDir: "generated",
+    });
+    assert.equal(result.totalEndpoints, 3);
+
+    openapi.components.pathItems = {
+      First: { $ref: "#/components/pathItems/Second" },
+      Second: { $ref: "#/components/pathItems/First" },
+    };
+    openapi.paths = { "/cycle": { $ref: "#/components/pathItems/First" } };
+    await writeSwagger(root, "base", openapi);
+    await assert.rejects(
+      generate({
+        xapiForgeConfig: config([service("base")]),
+        projectId: "demo",
+        swaggerDir: "swagger",
+        outputDir: "generated-cycle",
+      }),
+      /path item \/cycle 包含循环 \$ref/,
+    );
+    assert.equal(existsSync(join(root, "generated-cycle")), false);
+  });
+});
+
+test("malformed schema, reference, operation, and tag shapes fail with actionable errors", async () => {
+  await withTempProject(async (root) => {
+    const cases = [
+      {
+        value: { ...document(), components: { schemas: null } },
+        error: /components\.schemas 必须是对象/,
+      },
+      {
+        value: document({ schemas: { BrokenDto: { $ref: 123 } } }),
+        error: /\$ref 必须是字符串/,
+      },
+      {
+        value: {
+          ...document({ schemas: { BrokenDto: { $dynamicRef: "#node" } } }),
+          openapi: "3.1.0",
+        },
+        error: /暂不支持 \$dynamicRef.*静默降级为 unknown/,
+      },
+      {
+        value: {
+          ...document({ schemas: { BrokenDto: { $anchor: "not valid" } } }),
+          openapi: "3.1.0",
+        },
+        error: /OpenAPI 3\.1 \$anchor 格式无效："not valid"/,
+      },
+      {
+        value: document({ paths: { "/broken": { get: [] } } }),
+        error: /operation GET \/broken 必须是对象/,
+      },
+      {
+        value: document({ paths: { "/broken": { GET: {} } } }),
+        error: /operation method 必须使用小写："GET" \/broken/,
+      },
+      {
+        value: document({ paths: { "/broken": null } }),
+        error: /path item \/broken 必须是对象/,
+      },
+      {
+        value: document({ paths: { broken: {} } }),
+        error: /paths key 必须以 \/ 开头或是 x- 扩展："broken"/,
+      },
+      {
+        value: document({ paths: { "/broken": { get: { tags: "not-an-array" } } } }),
+        error: /operation GET \/broken 的 tags 必须是字符串数组/,
+      },
+    ];
+
+    for (const fixture of cases) {
+      await writeSwagger(root, "base", fixture.value);
+      await assert.rejects(
+        generate({
+          xapiForgeConfig: config([service("base")]),
+          projectId: "demo",
+          swaggerDir: "swagger",
+          outputDir: "generated",
+        }),
+        fixture.error,
+      );
+      assert.equal(existsSync(join(root, "generated")), false);
+    }
+
+    await writeSwagger(root, "base", document());
+    await assert.rejects(
+      generate({
+        xapiForgeConfig: config([service("base")], {
+          typeExports: {
+            aliases: [{ service: "base", schema: "toString", exportAs: "StableName" }],
+          },
+        }),
+        projectId: "demo",
+        swaggerDir: "swagger",
+        outputDir: "generated",
+      }),
+      /显式 alias 指向不存在的 schema：base\/toString/,
+    );
+    assert.equal(existsSync(join(root, "generated")), false);
+
+    await mkdir(join(root, "swagger/demo/not-a-file.json"));
+    await assert.rejects(
+      generate({
+        xapiForgeConfig: config([
+          service("base", { source: { file: "swagger/demo/not-a-file.json" } }),
+        ]),
+        projectId: "demo",
+        swaggerDir: "swagger",
+        outputDir: "generated",
+      }),
+      /Swagger 必须是普通文件或指向普通文件的 symlink/,
+    );
+    assert.equal(existsSync(join(root, "generated")), false);
+  });
+});
+
+test("untrusted display and schema names cannot terminate generated comments", async () => {
+  await withTempProject(async (root) => {
+    const attack = "Evil */\nexport type Injected = never;\n/*";
+    await writeSwagger(
+      root,
+      "base",
+      document({ schemas: { [attack]: { type: "string" }, as: { type: "string" } } }),
+    );
+    await generate({
+      xapiForgeConfig: config([service("base")], { displayName: attack }),
+      projectId: "demo",
+      swaggerDir: "swagger",
+      outputDir: "generated",
+    });
+
+    for (const file of ["api-types.ts", "index.ts"]) {
+      const generated = await readFile(join(root, "generated/demo", file), "utf8");
+      await transform(generated, { loader: "ts", logLevel: "silent" });
+      const source = ts.createSourceFile(file, generated, ts.ScriptTarget.Latest, true);
+      let injected = false;
+      const visit = (node) => {
+        if (ts.isTypeAliasDeclaration(node) && node.name.text === "Injected") injected = true;
+        ts.forEachChild(node, visit);
+      };
+      visit(source);
+      assert.equal(injected, false, `${file} contains an injected declaration`);
+    }
+    assert.match(
+      await readFile(join(root, "generated/demo/api-types.ts"), "utf8"),
+      /export type _as =/,
+    );
   });
 });
 
@@ -510,6 +1009,60 @@ test("external references fail before writing generated output", async () => {
       /暂不支持外部 \$ref/,
     );
     assert.equal(existsSync(join(root, "generated")), false);
+  });
+});
+
+test("ref-like keys in literal JSON data are not treated as OpenAPI references", async () => {
+  await withTempProject(async (root) => {
+    await writeSwagger(
+      root,
+      "base",
+      document({
+        schemas: {
+          TargetDto: { type: "string" },
+          LiteralDto: {
+            type: "object",
+            default: { $ref: "business-default", $dynamicRef: "business-default" },
+            example: { $ref: "business-example", $dynamicRef: "business-example" },
+            properties: {
+              // `properties` is a schema map: property names that look like literal fields
+              // must not suppress reference validation inside their schema values.
+              example: { $ref: "#/components/schemas/TargetDto" },
+              value: { $ref: "#/components/schemas/TargetDto" },
+            },
+          },
+        },
+      }),
+    );
+    await generate({
+      xapiForgeConfig: config([service("base")]),
+      projectId: "demo",
+      swaggerDir: "swagger",
+      outputDir: "generated",
+    });
+    assert.equal(existsSync(join(root, "generated/demo/types/base.ts")), true);
+
+    await writeSwagger(
+      root,
+      "base",
+      document({
+        schemas: {
+          LiteralDto: {
+            type: "object",
+            properties: { value: { $ref: "external-schema.json" } },
+          },
+        },
+      }),
+    );
+    await assert.rejects(
+      generate({
+        xapiForgeConfig: config([service("base")]),
+        projectId: "demo",
+        swaggerDir: "swagger",
+        outputDir: "generated-invalid",
+      }),
+      /暂不支持外部 \$ref："external-schema\.json"/,
+    );
   });
 });
 
@@ -1389,6 +1942,57 @@ test("deterministic generation emits a manifest and check mode is read-only", as
   });
 });
 
+test("check mode reports directories and non-file nodes where generated files are expected", async () => {
+  await withTempProject(async (root) => {
+    await writeSwagger(root, "base", document());
+    const options = {
+      xapiForgeConfig: config([service("base")]),
+      projectId: "demo",
+      swaggerDir: "swagger",
+      outputDir: "generated",
+    };
+    await generate(options);
+
+    const outputDirectory = join(root, "generated/demo");
+    await rm(join(outputDirectory, "index.ts"));
+    await mkdir(join(outputDirectory, "index.ts"));
+    await mkdir(join(outputDirectory, "stale-empty"));
+
+    const checked = await generate({ ...options, check: true });
+    assert.equal(checked.changed, true);
+    assert.ok(checked.changedFiles.includes("index.ts"));
+    assert.ok(checked.changedFiles.includes("index.ts/"));
+    assert.ok(checked.changedFiles.includes("stale-empty/"));
+
+    await generate(options);
+    assert.match(await readFile(join(outputDirectory, "index.ts"), "utf8"), /createDemoClient/);
+    assert.equal(existsSync(join(outputDirectory, "stale-empty")), false);
+  });
+});
+
+test("generation recovers a stale lock but preserves an active lock", async () => {
+  await withTempProject(async (root) => {
+    await writeSwagger(root, "base", document());
+    const outputRoot = join(root, "generated");
+    const lockPath = join(outputRoot, ".xapiforge-generation.lock");
+    await mkdir(outputRoot, { recursive: true });
+    await writeFile(lockPath, `${JSON.stringify({ formatVersion: 1, pid: 999_999_999 })}\n`);
+    const options = {
+      xapiForgeConfig: config([service("base")]),
+      projectId: "demo",
+      swaggerDir: "swagger",
+      outputDir: "generated",
+    };
+
+    await generate(options);
+    assert.equal(existsSync(lockPath), false);
+
+    await writeFile(lockPath, `${JSON.stringify({ formatVersion: 1, pid: process.pid })}\n`);
+    await assert.rejects(generate(options), new RegExp(`正被 PID ${process.pid} 使用`));
+    assert.equal(existsSync(lockPath), true);
+  });
+});
+
 test("generateMany prepares every project before writing any output", async () => {
   await withTempProject(async (root) => {
     for (const projectName of ["first", "second"]) {
@@ -1462,7 +2066,7 @@ test("transactional replacement removes stale service files and leaves no transa
   });
 });
 
-test("an interrupted committing transaction restores its backup before the next generation", async () => {
+test("interrupted committing and committed transactions recover to the correct side", async () => {
   await withTempProject(async (root) => {
     await writeSwagger(root, "base", document());
     const options = {
@@ -1505,6 +2109,43 @@ test("an interrupted committing transaction restores its backup before the next 
     assert.equal(recovered.changed, false);
     assert.equal(existsSync(join(outputDir, "manifest.json")), true);
     assert.equal(existsSync(join(outputDir, "partial.txt")), false);
+    assert.deepEqual(await readdir(outputRoot), ["demo"]);
+
+    const committedId = "committed-test";
+    const committedBackup = `.demo.xapiforge-backup-${committedId}`;
+    const committedState = `.xapiforge-transaction-${committedId}.json`;
+    await rename(outputDir, join(outputRoot, committedBackup));
+    await mkdir(outputDir);
+    await writeFile(join(outputDir, "committed.txt"), "new output", "utf8");
+    await writeFile(
+      join(outputRoot, committedState),
+      JSON.stringify({
+        formatVersion: 1,
+        transactionId: committedId,
+        phase: "committing",
+        projects: [
+          {
+            project: "demo",
+            output: "demo",
+            staging: `.demo.xapiforge-tmp-${committedId}`,
+            backup: committedBackup,
+            hadOutput: true,
+          },
+        ],
+      }),
+      "utf8",
+    );
+    await writeFile(join(outputRoot, `${committedState}.committed`), "committed", "utf8");
+    await writeFile(
+      join(outputRoot, `${committedState}.committed.partial-abandoned`),
+      "partial",
+      "utf8",
+    );
+
+    const completed = await generate(options);
+    assert.equal(completed.changed, true);
+    assert.equal(existsSync(join(outputDir, "manifest.json")), true);
+    assert.equal(existsSync(join(outputDir, "committed.txt")), false);
     assert.deepEqual(await readdir(outputRoot), ["demo"]);
   });
 });

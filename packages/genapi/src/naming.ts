@@ -1,5 +1,6 @@
 /** TypeScript 关键字不能直接作为生成的 type、namespace 或属性标识符。 */
 export const TYPESCRIPT_RESERVED_WORDS: ReadonlySet<string> = new Set([
+  "as",
   "break",
   "case",
   "catch",
@@ -56,6 +57,27 @@ export function safeRuntimeKey(value: string): string {
 export function safeTypeAlias(value: string): string {
   const safe = value.replace(/[^A-Za-z0-9_$]/g, "_");
   return /^[0-9]/.test(safe) || TYPESCRIPT_RESERVED_WORDS.has(safe) ? `_${safe}` : safe;
+}
+
+/** 把外部文本压成安全单行，避免结束符提前截断生成注释。 */
+export function safeCommentText(value: string): string {
+  let result = "";
+  let inControlRun = false;
+  for (const character of value) {
+    const codePoint = character.codePointAt(0)!;
+    const isLineOrControl =
+      codePoint <= 0x1f || codePoint === 0x7f || codePoint === 0x2028 || codePoint === 0x2029;
+    if (isLineOrControl) {
+      if (!inControlRun) result += " ";
+      inControlRun = true;
+      continue;
+    }
+    inControlRun = false;
+    const isBidirectionalControl =
+      (codePoint >= 0x202a && codePoint <= 0x202e) || (codePoint >= 0x2066 && codePoint <= 0x2069);
+    if (!isBidirectionalControl) result += character;
+  }
+  return result.replace(/\*\//g, "*\\/");
 }
 
 /** 不依赖 locale 的稳定字符串排序。 */

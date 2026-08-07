@@ -27,18 +27,42 @@
  *   // → 产出 src/api/gen/demo/index.ts + src/api/gen/demo/types/<svc>.ts + src/api/gen/demo/api-types.ts
  */
 
-import { mkdir, open, readFile, readdir, rename, rm, unlink, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import openapiTS, { astToString, type OpenAPI3 } from "openapi-typescript";
 import { canonicalizeOpenApi, canonicalOpenApiHash, freezeOpenApi } from "./canonical-openapi.js";
 import {
   lexicalCompare,
   pascalCaseConfigId,
+  safeCommentText,
   safeRuntimeKey,
   TYPESCRIPT_RESERVED_WORDS,
 } from "./naming.js";
+import { parseJsonInput } from "./json-input.js";
+import {
+  createOpenApiTypescriptInput,
+  referenceChildRole,
+  type ReferenceWalkRole,
+} from "./reference-context.js";
+import {
+  DEFAULT_MAX_SWAGGER_BYTES,
+  isValidFetchTimeout,
+  isValidSwaggerSize,
+} from "./swagger-fetch.js";
+import { isPathInside, resolvePhysicalPath } from "./filesystem-path.js";
 import { resolveSwaggerInputPath, type SwaggerSource } from "./swagger-source.js";
 import { renderApiTypes, type ProjectTypeExportConfig } from "./type-exports.js";
 
@@ -86,6 +110,8 @@ export interface ProjectConfig {
 
 export interface XApiForgeConfig {
   timeoutMs: number;
+  /** 单个本地文件、离线缓存或远程响应的最大字节数；默认 64 MiB。 */
+  maxSwaggerBytes?: number;
   outputDir: string;
   /** 生成产物根目录；CLI 默认使用 `src/api/gen`。 */
   genOutputDir?: string;
@@ -164,7 +190,8 @@ export interface GenerateOptions {
   projectId: string;
   swaggerDir: string;
   outputDir: string;
-  templateDir?: string;
+  /** source.file 相对路径的解析目录；默认当前工作目录（CLI 的配置文件目录）。 */
+  configDirectory?: string;
   emitApiTypes?: boolean;
   /** 仅比较 staging 与正式目录，不修改正式产物。 */
   check?: boolean;
@@ -184,18 +211,39 @@ export interface GenerateResult {
   changedFiles: string[];
 }
 
-// ---------- 内部类型 ----------
-
-interface TagInfo {
-  method: string;
-  path: string;
-  summary?: string;
-  opId: string | null;
+function validateGenerateOptions(value: unknown, path: string): asserts value is GenerateOptions {
+  if (!isRecord(value)) throw configError(`${path} 必须是对象`);
+  assertAllowedFields(value, path, [
+    "check",
+    "configDirectory",
+    "emitApiTypes",
+    "hooks",
+    "outputDir",
+    "projectId",
+    "swaggerDir",
+    "xapiForgeConfig",
+  ]);
+  assertConfigId(value.projectId, `${path}.projectId`);
+  assertFileSystemPath(value.swaggerDir, `${path}.swaggerDir`);
+  assertFileSystemPath(value.outputDir, `${path}.outputDir`);
+  if (value.configDirectory !== undefined) {
+    assertFileSystemPath(value.configDirectory, `${path}.configDirectory`);
+  }
+  for (const field of ["check", "emitApiTypes"] as const) {
+    if (value[field] !== undefined && typeof value[field] !== "boolean") {
+      throw configError(`${path}.${field} 必须是 boolean`);
+    }
+  }
+  validateHooks(value.hooks, `${path}.hooks`);
+  if (!isRecord(value.xapiForgeConfig)) {
+    throw configError(`${path}.xapiForgeConfig 必须是对象`);
+  }
 }
+
+// ---------- 内部类型 ----------
 
 interface ServiceInfo {
   name: string;
-  tagMap: Record<string, TagInfo[]>;
   endpointCount: number;
 }
 
@@ -233,6 +281,7 @@ interface TransactionState {
 
 const CONFIG_ID_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const TYPESCRIPT_IDENTIFIER_PATTERN = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+const JSON_SCHEMA_ANCHOR_PATTERN = /^[A-Za-z_][-A-Za-z0-9._]*$/;
 const HTTP_METHODS = new Set(["get", "put", "post", "delete", "options", "head", "patch", "trace"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -274,6 +323,11 @@ function assertNonEmptyString(value: unknown, path: string): asserts value is st
   }
 }
 
+function assertFileSystemPath(value: unknown, path: string): asserts value is string {
+  assertNonEmptyString(value, path);
+  if (value.includes("\0")) throw configError(`${path} 不得包含 NUL 字符`);
+}
+
 function assertConfigId(value: unknown, path: string): asserts value is string {
   assertNonEmptyString(value, path);
   if (!CONFIG_ID_PATTERN.test(value)) {
@@ -312,7 +366,7 @@ function validateSwaggerSource(value: unknown, path: string): void {
     throw configError(`${path} 必须且只能配置 file 或 url 其中一个`);
   }
   if (hasFile) {
-    assertNonEmptyString(value.file, `${path}.file`);
+    assertFileSystemPath(value.file, `${path}.file`);
     if (!value.file.toLowerCase().endsWith(".json")) {
       throw configError(`${path}.file 必须指向 .json 文件`);
     }
@@ -332,6 +386,9 @@ function validateSwaggerSource(value: unknown, path: string): void {
   if (parsed.username || parsed.password) {
     throw configError(`${path}.url 不得包含用户名或密码`);
   }
+  if (parsed.hash) {
+    throw configError(`${path}.url 不得包含 fragment；HTTP 请求不会发送 # 后内容`);
+  }
 }
 
 /** 在 CLI 或 programmatic generate 写文件前执行完整运行时配置校验。 */
@@ -341,17 +398,21 @@ export function validateConfig(config: XApiForgeConfig): void {
   assertAllowedFields(config, "根配置", [
     "genOutputDir",
     "hooks",
+    "maxSwaggerBytes",
     "mode",
     "outputDir",
     "projects",
     "timeoutMs",
   ]);
-  assertNonEmptyString(config.outputDir, "outputDir");
+  assertFileSystemPath(config.outputDir, "outputDir");
   if (config.genOutputDir !== undefined) {
-    assertNonEmptyString(config.genOutputDir, "genOutputDir");
+    assertFileSystemPath(config.genOutputDir, "genOutputDir");
   }
-  if (!Number.isFinite(config.timeoutMs) || config.timeoutMs <= 0) {
-    throw configError("timeoutMs 必须是大于 0 的有限数字");
+  if (!isValidFetchTimeout(config.timeoutMs)) {
+    throw configError("timeoutMs 必须是 1..2147483647 范围内的整数毫秒");
+  }
+  if (config.maxSwaggerBytes !== undefined && !isValidSwaggerSize(config.maxSwaggerBytes)) {
+    throw configError("maxSwaggerBytes 必须是正安全整数");
   }
   if (config.mode !== undefined && config.mode !== "online" && config.mode !== "offline") {
     throw configError(`mode 只能是 "online" 或 "offline"，实际为 "${String(config.mode)}"`);
@@ -532,6 +593,13 @@ function assertOpenApiDocument(value: unknown, label: string): asserts value is 
   if (value.components !== undefined && !isRecord(value.components)) {
     throw new Error(`[genapi] ${label}.components 必须是对象`);
   }
+  if (
+    isRecord(value.components) &&
+    value.components.schemas !== undefined &&
+    !isRecord(value.components.schemas)
+  ) {
+    throw new Error(`[genapi] ${label}.components.schemas 必须是对象`);
+  }
 }
 
 function decodeReferenceFragment(reference: string, label: string): string {
@@ -547,7 +615,7 @@ function resolveJsonPointer(
   fragment: string,
   reference: string,
   label: string,
-): void {
+): unknown {
   let current: unknown = document;
   for (const encodedToken of fragment.slice(1).split("/")) {
     if (/~(?:[^01]|$)/.test(encodedToken)) {
@@ -563,33 +631,75 @@ function resolveJsonPointer(
     }
     current = (current as Record<string, unknown>)[token];
   }
+  return current;
+}
+
+function resolveInternalReference(
+  document: OpenAPI3,
+  anchors: ReadonlyMap<string, unknown>,
+  reference: string,
+  label: string,
+): unknown {
+  if (reference === "#") return document;
+  const fragment = decodeReferenceFragment(reference, label);
+  if (fragment.startsWith("/")) {
+    return resolveJsonPointer(document, fragment, reference, label);
+  }
+  const target = anchors.get(fragment);
+  if (target === undefined) {
+    throw new Error(`[genapi] ${label} 的内部 $ref anchor 无法解析："${reference}"`);
+  }
+  return target;
 }
 
 /** 拒绝外部引用，并确保内部 JSON Pointer/OpenAPI 3.1 anchor 均可解析。 */
-function assertReferencesResolvable(document: OpenAPI3, label: string): void {
-  const pending: unknown[] = [document];
+function assertReferencesResolvable(
+  document: OpenAPI3,
+  label: string,
+): ReadonlyMap<string, unknown> {
+  const pending: Array<{ value: unknown; role: ReferenceWalkRole }> = [
+    { value: document, role: "object" },
+  ];
   const visited = new Set<object>();
   const references: string[] = [];
-  const anchors = new Set<string>();
+  const anchors = new Map<string, unknown>();
   while (pending.length > 0) {
-    const current = pending.pop();
+    const next = pending.pop()!;
+    const current = next.value;
     if (typeof current !== "object" || current === null || visited.has(current)) continue;
     visited.add(current);
     if (Array.isArray(current)) {
-      for (const item of current as unknown[]) pending.push(item);
+      for (const item of current as unknown[]) pending.push({ value: item, role: "object" });
       continue;
     }
     for (const [key, value] of Object.entries(current)) {
-      if (key === "$ref" && typeof value === "string") {
+      if (next.role !== "map" && key === "$ref") {
+        if (typeof value !== "string") {
+          throw new Error(`[genapi] ${label} 的 $ref 必须是字符串`);
+        }
         references.push(value);
       }
-      if (key === "$anchor" && typeof value === "string") {
+      if (next.role !== "map" && (key === "$dynamicRef" || key === "$recursiveRef")) {
+        throw new Error(
+          `[genapi] ${label} 暂不支持 ${key}；当前 openapi-typescript 会将其静默降级为 unknown`,
+        );
+      }
+      if (next.role !== "map" && key === "$anchor") {
+        if (typeof value !== "string") {
+          throw new Error(`[genapi] ${label} 的 OpenAPI 3.1 $anchor 必须是字符串`);
+        }
+        if (!JSON_SCHEMA_ANCHOR_PATTERN.test(value)) {
+          throw new Error(
+            `[genapi] ${label} 的 OpenAPI 3.1 $anchor 格式无效：${JSON.stringify(value)}`,
+          );
+        }
         if (anchors.has(value)) {
           throw new Error(`[genapi] ${label} 包含重复的 OpenAPI 3.1 $anchor："${value}"`);
         }
-        anchors.add(value);
+        anchors.set(value, current);
       }
-      pending.push(value);
+      const childRole = referenceChildRole(next.role, key, value);
+      if (childRole !== null) pending.push({ value, role: childRole });
     }
   }
 
@@ -597,14 +707,9 @@ function assertReferencesResolvable(document: OpenAPI3, label: string): void {
     if (!reference.startsWith("#")) {
       throw new Error(`[genapi] ${label} 暂不支持外部 $ref："${reference}"`);
     }
-    if (reference === "#") continue;
-    const fragment = decodeReferenceFragment(reference, label);
-    if (fragment.startsWith("/")) {
-      resolveJsonPointer(document, fragment, reference, label);
-    } else if (!anchors.has(fragment)) {
-      throw new Error(`[genapi] ${label} 的内部 $ref anchor 无法解析："${reference}"`);
-    }
+    resolveInternalReference(document, anchors, reference, label);
   }
+  return anchors;
 }
 
 function resolveHooks(
@@ -623,6 +728,7 @@ async function loadServiceModels(
   configDirectory: string,
   outDir: string,
   rootHooks: GenapiHooks | undefined,
+  maxSwaggerBytes: number,
 ): Promise<ServiceModel[]> {
   const models: ServiceModel[] = [];
   const services = [...project.services].sort((left, right) =>
@@ -635,13 +741,26 @@ async function loadServiceModels(
       projectId: project.name,
       service,
     });
-    if (!existsSync(swaggerFile)) {
-      throw new Error(`[genapi] required Swagger 缺失：${swaggerFile}`);
+    assertPathOutside(outDir, swaggerFile, `${project.name}/${service.name} Swagger 输入文件`);
+    let swaggerStats: Awaited<ReturnType<typeof stat>>;
+    try {
+      swaggerStats = await stat(swaggerFile);
+    } catch (cause) {
+      if (fileSystemErrorCode(cause) === "ENOENT") {
+        throw new Error(`[genapi] required Swagger 缺失：${swaggerFile}`, { cause });
+      }
+      throw new Error(`[genapi] 无法检查 Swagger：${swaggerFile}`, { cause });
+    }
+    if (!swaggerStats.isFile()) {
+      throw new Error(`[genapi] Swagger 必须是普通文件或指向普通文件的 symlink：${swaggerFile}`);
+    }
+    if (swaggerStats.size > maxSwaggerBytes) {
+      throw new Error(`[genapi] Swagger 超过 maxSwaggerBytes (${maxSwaggerBytes})：${swaggerFile}`);
     }
 
     let parsed: unknown;
     try {
-      parsed = JSON.parse(await readFile(swaggerFile, "utf8"));
+      parsed = parseJsonInput(await readFile(swaggerFile, "utf8"));
     } catch (cause) {
       throw new Error(`[genapi] 无法解析 ${swaggerFile}`, { cause });
     }
@@ -665,14 +784,13 @@ async function loadServiceModels(
       );
     }
     assertOpenApiDocument(transformed, `${project.name}/${service.name} 规范化文档`);
-    assertReferencesResolvable(transformed, `${project.name}/${service.name}`);
     const normalizedDocument = freezeOpenApi(canonicalizeOpenApi(transformed));
-    hookContext.normalizedDocument = normalizedDocument;
-    const tagMap = extractTags(normalizedDocument);
-    const endpointCount = Object.values(tagMap).reduce(
-      (count, operations) => count + operations.length,
-      0,
+    const anchors = assertReferencesResolvable(
+      normalizedDocument,
+      `${project.name}/${service.name}`,
     );
+    hookContext.normalizedDocument = normalizedDocument;
+    const endpointCount = countOperations(normalizedDocument, anchors);
     const components = normalizedDocument.components as
       { schemas?: Record<string, unknown> } | undefined;
     models.push({
@@ -680,7 +798,7 @@ async function loadServiceModels(
       originalDocument,
       document: normalizedDocument,
       schemas: components?.schemas ?? {},
-      serviceInfo: { name: service.name, tagMap, endpointCount },
+      serviceInfo: { name: service.name, endpointCount },
       hooks,
       hookContext,
       normalizedDocumentHash: canonicalOpenApiHash(normalizedDocument),
@@ -690,9 +808,50 @@ async function loadServiceModels(
 }
 
 function assertPathInside(root: string, target: string, label: string): void {
-  const relativePath = relative(root, target);
-  if (relativePath === "" || (!relativePath.startsWith("..") && !isAbsolute(relativePath))) return;
+  if (isPathInside(root, target)) return;
   throw new Error(`[genapi] ${label} 越过配置根目录：${target}`);
+}
+
+function assertPathOutside(root: string, target: string, label: string): void {
+  if (!isPathInside(root, target)) return;
+  throw new Error(`[genapi] ${label} 位于生成输出目录内，生成会覆盖输入：${target}`);
+}
+
+async function assertConfiguredSourcesOutsideOutput(options: {
+  config: XApiForgeConfig;
+  configDirectory: string;
+  swaggerRoot: string;
+  outDir: string;
+}): Promise<void> {
+  const physicalOutDir = await resolvePhysicalPath(options.outDir);
+  for (const project of options.config.projects) {
+    for (const service of project.services) {
+      const inputPath = resolveSwaggerInputPath({
+        configDirectory: options.configDirectory,
+        swaggerRoot: options.swaggerRoot,
+        projectId: project.name,
+        service,
+      });
+      assertPathOutside(
+        options.outDir,
+        inputPath,
+        `${project.name}/${service.name} Swagger 输入文件`,
+      );
+      let physicalInput: string | undefined;
+      try {
+        physicalInput = await resolvePhysicalPath(inputPath);
+      } catch {
+        // 未选项目的来源可能暂时不可访问；选中项目稍后仍会严格 stat/read。
+      }
+      if (physicalInput !== undefined) {
+        assertPathOutside(
+          physicalOutDir,
+          physicalInput,
+          `${project.name}/${service.name} Swagger 输入文件物理路径`,
+        );
+      }
+    }
+  }
 }
 
 // ---------- 入口 ----------
@@ -701,7 +860,7 @@ function assertPathInside(root: string, target: string, label: string): void {
  * 生成一个项目（{outputDir}/{projectId}/ 目录）。
  *
  * 1. 对每个 service 跑 openapi-typescript 生成 types.ts
- * 2. 抽 tag → 输出 (endpointCount) 给 banner 用
+ * 2. 解析 PathItem → 输出唯一 operation 数量给 banner 用
  * 3. 写 src/index.ts（按 service 拆 openapi-fetch client + re-export）
  * 4. 写 src/api-types.ts（按 components.schemas 导 alias）
  */
@@ -712,8 +871,11 @@ async function buildProjectArtifacts(opts: GenerateOptions): Promise<ProjectArti
     throw new Error(`project '${opts.projectId}' not in xapiForgeConfig.projects`);
   }
 
-  assertNonEmptyString(opts.swaggerDir, "GenerateOptions.swaggerDir");
-  assertNonEmptyString(opts.outputDir, "GenerateOptions.outputDir");
+  assertFileSystemPath(opts.swaggerDir, "GenerateOptions.swaggerDir");
+  assertFileSystemPath(opts.outputDir, "GenerateOptions.outputDir");
+  if (opts.configDirectory !== undefined) {
+    assertFileSystemPath(opts.configDirectory, "GenerateOptions.configDirectory");
+  }
   const swaggerRoot = resolve(process.cwd(), opts.swaggerDir);
   const swaggerProjectDir = resolve(swaggerRoot, project.name);
   assertPathInside(swaggerRoot, swaggerProjectDir, `project ${project.name} Swagger 路径`);
@@ -721,15 +883,23 @@ async function buildProjectArtifacts(opts: GenerateOptions): Promise<ProjectArti
   const outputRoot = resolve(process.cwd(), opts.outputDir);
   const outDir = resolve(outputRoot, project.name);
   assertPathInside(outputRoot, outDir, `project ${project.name} 输出路径`);
+  const configDirectory = resolve(process.cwd(), opts.configDirectory ?? ".");
+  await assertConfiguredSourcesOutsideOutput({
+    config: opts.xapiForgeConfig,
+    configDirectory,
+    swaggerRoot,
+    outDir,
+  });
   const rootHooks = opts.hooks !== undefined ? opts.hooks : opts.xapiForgeConfig.hooks;
 
   // 所有 service 和文件内容先在内存中准备完成；失败时不创建正式输出目录。
   const serviceModels = await loadServiceModels(
     project,
     swaggerRoot,
-    process.cwd(),
+    configDirectory,
     outDir,
     rootHooks,
+    opts.xapiForgeConfig.maxSwaggerBytes ?? DEFAULT_MAX_SWAGGER_BYTES,
   );
   const files = new Map<string, string>();
 
@@ -737,7 +907,13 @@ async function buildProjectArtifacts(opts: GenerateOptions): Promise<ProjectArti
   for (const model of serviceModels) {
     let typesContent = await runOpenapiTypescript(model.document);
     if (model.hooks?.transformTypes) {
-      typesContent = await model.hooks.transformTypes(typesContent, model.hookContext);
+      const transformedTypes = await model.hooks.transformTypes(typesContent, model.hookContext);
+      if (typeof transformedTypes !== "string") {
+        throw new Error(
+          `[genapi] transformTypes(${project.name}/${model.config.name}) 必须返回字符串`,
+        );
+      }
+      typesContent = transformedTypes;
     }
     files.set(`types/${model.config.name}.ts`, normalizeLineEndings(typesContent));
   }
@@ -783,6 +959,10 @@ async function buildProjectArtifacts(opts: GenerateOptions): Promise<ProjectArti
 
 /** 一次准备一个或多个 project；全部准备成功后才开始写文件。 */
 export async function generateMany(options: GenerateOptions[]): Promise<GenerateResult[]> {
+  if (!Array.isArray(options)) throw configError("generateMany options 必须是数组");
+  for (const [index, option] of options.entries()) {
+    validateGenerateOptions(option, `generateMany options[${index}]`);
+  }
   if (options.length === 0) return [];
   const checkMode = options[0]!.check === true;
   if (options.some((option) => (option.check === true) !== checkMode)) {
@@ -817,6 +997,7 @@ export async function generateMany(options: GenerateOptions[]): Promise<Generate
   }
   const outputRoot = outputRoots[0]!;
   const releaseLock = await acquireGenerationLock(outputRoot);
+  let results: GenerateResult[];
   try {
     await recoverInterruptedTransactions(outputRoot);
     for (const project of projects) await recoverOrphanProjectDirectories(project.outputDir);
@@ -832,14 +1013,21 @@ export async function generateMany(options: GenerateOptions[]): Promise<Generate
       outputRoot,
       evaluated.filter((item) => item.changedFiles.length > 0).map((item) => item.project),
     );
-    return evaluated.map(({ project, changedFiles }) => ({
+    results = evaluated.map(({ project, changedFiles }) => ({
       ...project.result,
       changed: changedFiles.length > 0,
       changedFiles,
     }));
-  } finally {
-    await releaseLock();
+  } catch (cause) {
+    try {
+      await releaseLock();
+    } catch (releaseCause) {
+      throw new AggregateError([cause, releaseCause], "[genapi] 生成失败且生成锁清理失败");
+    }
+    throw cause;
   }
+  await releaseLock();
+  return results;
 }
 
 export async function generate(opts: GenerateOptions): Promise<GenerateResult> {
@@ -902,10 +1090,35 @@ async function listRelativeFiles(root: string, prefix = ""): Promise<string[]> {
   const files: string[] = [];
   for (const entry of entries) {
     const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
-    if (entry.isDirectory()) files.push(...(await listRelativeFiles(root, relativePath)));
-    else if (entry.isFile()) files.push(relativePath);
+    if (entry.isDirectory()) {
+      const nested = await listRelativeFiles(root, relativePath);
+      if (nested.length === 0) files.push(`${relativePath}/`);
+      else files.push(...nested);
+    } else {
+      // symlink、FIFO 等也属于输出漂移；不能让 --check 静默忽略。
+      files.push(relativePath);
+    }
   }
   return files.sort();
+}
+
+/** 确保目标及其每一级父路径都是普通目录/文件，不跟随中间 symlink。 */
+async function isRegularOutputFile(root: string, relativePath: string): Promise<boolean> {
+  const segments = relativePath.split("/");
+  let current = root;
+  for (const [index, segment] of segments.entries()) {
+    current = join(current, segment);
+    let stats;
+    try {
+      stats = await lstat(current);
+    } catch (cause) {
+      if (fileSystemErrorCode(cause) === "ENOENT") return false;
+      throw cause;
+    }
+    if (index === segments.length - 1) return stats.isFile();
+    if (!stats.isDirectory()) return false;
+  }
+  return false;
 }
 
 async function compareArtifacts(
@@ -917,7 +1130,7 @@ async function compareArtifacts(
   const changed: string[] = [];
   for (const relativePath of [...candidates].sort()) {
     const expected = expectedFiles.get(relativePath);
-    if (expected === undefined || !existsSync(join(outputDir, relativePath))) {
+    if (expected === undefined || !(await isRegularOutputFile(outputDir, relativePath))) {
       changed.push(relativePath);
       continue;
     }
@@ -950,19 +1163,46 @@ function fileSystemErrorCode(cause: unknown): string | undefined {
   return isRecord(cause) && typeof cause.code === "string" ? cause.code : undefined;
 }
 
+async function cleanupGenerationLock(
+  handle: Awaited<ReturnType<typeof open>>,
+  lockPath: string,
+): Promise<void> {
+  const errors: unknown[] = [];
+  try {
+    await handle.close();
+  } catch (cause) {
+    errors.push(cause);
+  }
+  try {
+    await unlink(lockPath);
+  } catch (cause) {
+    if (fileSystemErrorCode(cause) !== "ENOENT") errors.push(cause);
+  }
+  if (errors.length > 0) throw new AggregateError(errors, `无法清理生成锁：${lockPath}`);
+}
+
 async function acquireGenerationLock(outputRoot: string): Promise<() => Promise<void>> {
   await mkdir(outputRoot, { recursive: true });
   const lockPath = join(outputRoot, ".xapiforge-generation.lock");
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const handle = await open(lockPath, "wx");
-      await handle.writeFile(`${JSON.stringify({ formatVersion: 1, pid: process.pid })}\n`, "utf8");
-      return async () => {
-        await handle.close();
-        await unlink(lockPath).catch((cause: unknown) => {
-          if (fileSystemErrorCode(cause) !== "ENOENT") throw cause;
-        });
-      };
+      try {
+        await handle.writeFile(
+          `${JSON.stringify({ formatVersion: 1, pid: process.pid })}\n`,
+          "utf8",
+        );
+      } catch (cause) {
+        try {
+          await cleanupGenerationLock(handle, lockPath);
+        } catch (cleanupCause) {
+          throw new Error(`[genapi] 无法初始化且无法清理生成锁：${lockPath}`, {
+            cause: new AggregateError([cause, cleanupCause]),
+          });
+        }
+        throw cause;
+      }
+      return () => cleanupGenerationLock(handle, lockPath);
     } catch (cause) {
       if (fileSystemErrorCode(cause) !== "EEXIST") throw cause;
       let lock: { pid?: unknown };
@@ -991,6 +1231,10 @@ async function acquireGenerationLock(outputRoot: string): Promise<() => Promise<
 
 function transactionStatePath(outputRoot: string, transactionId: string): string {
   return join(outputRoot, `.xapiforge-transaction-${transactionId}.json`);
+}
+
+function transactionCommitMarkerPath(statePath: string): string {
+  return `${statePath}.committed`;
 }
 
 function validateTransactionState(
@@ -1077,11 +1321,21 @@ async function recoverTransactionState(
   await unlink(statePath).catch((cause: unknown) => {
     if (fileSystemErrorCode(cause) !== "ENOENT") throw cause;
   });
+  await unlink(transactionCommitMarkerPath(statePath)).catch((cause: unknown) => {
+    if (fileSystemErrorCode(cause) !== "ENOENT") throw cause;
+  });
 }
 
 async function recoverInterruptedTransactions(outputRoot: string): Promise<void> {
   if (!existsSync(outputRoot)) return;
-  const stateFiles = (await readdir(outputRoot))
+  const entries = await readdir(outputRoot);
+  const partialStateFiles = entries.filter((name) =>
+    /^\.xapiforge-transaction-[A-Za-z0-9-]+\.json(?:\.committed)?\.partial-[A-Za-z0-9-]+$/.test(
+      name,
+    ),
+  );
+  await Promise.all(partialStateFiles.map((name) => rm(join(outputRoot, name), { force: true })));
+  const stateFiles = entries
     .filter((name) => /^\.xapiforge-transaction-[A-Za-z0-9-]+\.json$/.test(name))
     .sort();
   for (const stateFile of stateFiles) {
@@ -1093,8 +1347,16 @@ async function recoverInterruptedTransactions(outputRoot: string): Promise<void>
       throw new Error(`[genapi] 无法解析 transaction state，请人工确认：${statePath}`, { cause });
     }
     validateTransactionState(state, statePath);
-    await recoverTransactionState(outputRoot, state, statePath);
+    const recoveryState: TransactionState = existsSync(transactionCommitMarkerPath(statePath))
+      ? { ...state, phase: "committed" }
+      : state;
+    await recoverTransactionState(outputRoot, recoveryState, statePath);
   }
+  const remainingEntries = await readdir(outputRoot);
+  const orphanMarkers = remainingEntries.filter((name) =>
+    /^\.xapiforge-transaction-[A-Za-z0-9-]+\.json\.committed$/.test(name),
+  );
+  await Promise.all(orphanMarkers.map((name) => rm(join(outputRoot, name), { force: true })));
 }
 
 async function recoverOrphanProjectDirectories(outputDir: string): Promise<void> {
@@ -1121,8 +1383,25 @@ async function recoverOrphanProjectDirectories(outputDir: string): Promise<void>
 
 async function writeTransactionState(outputRoot: string, state: TransactionState): Promise<string> {
   const statePath = transactionStatePath(outputRoot, state.transactionId);
-  await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  const partialPath = `${statePath}.partial-${process.pid}-${randomUUID()}`;
+  try {
+    await writeFile(partialPath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+    await rename(partialPath, statePath);
+  } finally {
+    await rm(partialPath, { force: true });
+  }
   return statePath;
+}
+
+async function writeTransactionCommitMarker(statePath: string): Promise<void> {
+  const markerPath = transactionCommitMarkerPath(statePath);
+  const partialPath = `${markerPath}.partial-${process.pid}-${randomUUID()}`;
+  try {
+    await writeFile(partialPath, `${JSON.stringify({ formatVersion: 1, committed: true })}\n`);
+    await rename(partialPath, markerPath);
+  } finally {
+    await rm(partialPath, { force: true });
+  }
 }
 
 async function commitProjectArtifacts(
@@ -1170,8 +1449,7 @@ async function commitProjectArtifacts(
     for (const entry of state.projects) {
       await rename(join(outputRoot, entry.staging), join(outputRoot, entry.output));
     }
-    const committedState: TransactionState = { ...state, phase: "committed" };
-    await writeTransactionState(outputRoot, committedState);
+    await writeTransactionCommitMarker(statePath);
     state.phase = "committed";
   } catch (cause) {
     try {
@@ -1193,35 +1471,78 @@ async function commitProjectArtifacts(
 async function runOpenapiTypescript(document: OpenAPI3): Promise<string> {
   // 直接调用依赖的程序 API，不依赖消费者项目是否把传递依赖的 bin 提升到
   // node_modules/.bin。这样 npm、pnpm（含 isolated linker）和 yarn 项目行为一致。
-  // Redocly bundler 会改写输入（例如重挂 components），因此只给它权威 normalized
-  // document 的一次性 clone；不重新读取、规范化或执行 hook。
-  const ast = await openapiTS(structuredClone(document));
+  // Redocly bundler 会改写输入，并会误解 literal JSON 中的引用样式 key。
+  // 因此只给它从权威 normalized document 派生的一次性安全视图；不重新读取、
+  // 规范化或执行 hook，endpoint/alias/manifest 仍只读取权威冻结对象。
+  const ast = await openapiTS(createOpenApiTypescriptInput(document));
   return astToString(ast);
 }
 
-/**
- * 从 swagger.json 抽 paths，按 tag 聚合。
- */
-function extractTags(document: OpenAPI3): Record<string, TagInfo[]> {
-  const tags: Record<string, TagInfo[]> = {};
+/** 解析 PathItem 的内部引用；本地字段覆盖被引用字段。 */
+function resolvePathItem(
+  document: OpenAPI3,
+  anchors: ReadonlyMap<string, unknown>,
+  pathStr: string,
+  value: unknown,
+  referenceChain = new Set<string>(),
+): Record<string, unknown> {
+  if (!isRecord(value)) throw new Error(`[genapi] path item ${pathStr} 必须是对象`);
+  if (value.$ref === undefined) return value;
+  if (typeof value.$ref !== "string") {
+    throw new Error(`[genapi] path item ${pathStr} 的 $ref 必须是字符串`);
+  }
+  const reference = value.$ref;
+  if (referenceChain.has(reference)) {
+    throw new Error(`[genapi] path item ${pathStr} 包含循环 $ref：${reference}`);
+  }
+  referenceChain.add(reference);
+  try {
+    const referenced = resolveInternalReference(
+      document,
+      anchors,
+      reference,
+      `path item ${pathStr}`,
+    );
+    const inherited = resolvePathItem(document, anchors, pathStr, referenced, referenceChain);
+    return Object.assign(Object.create(null) as Record<string, unknown>, inherited, value);
+  } finally {
+    referenceChain.delete(reference);
+  }
+}
+
+/** 从 OpenAPI paths 统计唯一 operation；多 tag 不得重复计数。 */
+function countOperations(document: OpenAPI3, anchors: ReadonlyMap<string, unknown>): number {
+  let endpointCount = 0;
   for (const [pathStr, methods] of Object.entries(document.paths ?? {})) {
-    for (const [method, rawOp] of Object.entries(methods ?? {})) {
-      if (!HTTP_METHODS.has(method.toLowerCase())) continue;
-      if (!rawOp || typeof rawOp !== "object") continue;
-      const op = rawOp as { tags?: string[]; operationId?: string; summary?: string };
-      const tagList = op.tags?.length ? op.tags : ["(untagged)"];
-      for (const t of tagList) {
-        const list = tags[t] ?? (tags[t] = []);
-        list.push({
-          method: method.toUpperCase(),
-          path: pathStr,
-          summary: op.summary,
-          opId: op.operationId ?? null,
-        });
+    if (pathStr.startsWith("x-")) continue;
+    if (!pathStr.startsWith("/")) {
+      throw new Error(`[genapi] paths key 必须以 / 开头或是 x- 扩展：${JSON.stringify(pathStr)}`);
+    }
+    const pathItem = resolvePathItem(document, anchors, pathStr, methods);
+    for (const [method, rawOp] of Object.entries(pathItem)) {
+      const normalizedMethod = method.toLowerCase();
+      if (!HTTP_METHODS.has(normalizedMethod)) continue;
+      if (method !== normalizedMethod) {
+        throw new Error(
+          `[genapi] operation method 必须使用小写：${JSON.stringify(method)} ${pathStr}`,
+        );
       }
+      if (!isRecord(rawOp)) {
+        throw new Error(`[genapi] operation ${method.toUpperCase()} ${pathStr} 必须是对象`);
+      }
+      const op = rawOp as { tags?: unknown };
+      if (
+        op.tags !== undefined &&
+        (!Array.isArray(op.tags) || op.tags.some((tag) => typeof tag !== "string"))
+      ) {
+        throw new Error(
+          `[genapi] operation ${method.toUpperCase()} ${pathStr} 的 tags 必须是字符串数组`,
+        );
+      }
+      endpointCount += 1;
     }
   }
-  return tags;
+  return endpointCount;
 }
 
 // ---------- 模板渲染 ----------
@@ -1235,17 +1556,18 @@ function renderIndex(
   const totalEndpoints = services.reduce((n, s) => n + s.endpointCount, 0);
   const firstServiceKey = safeRuntimeKey(serviceNames[0] ?? "service");
   const projectTypeName = pascalCaseConfigId(projectId);
+  const projectDisplayComment = safeCommentText(projectDisplay);
 
   const parts: string[] = [];
 
   parts.push("/**");
-  parts.push(` * ${projectDisplay} API 客户端（生成产物，自动生成勿手改）`);
+  parts.push(` * ${projectDisplayComment} API 客户端（生成产物，自动生成勿手改）`);
   parts.push(" *");
   parts.push(
     " * 引擎：openapi-typescript（路径/schema 类型）+ @xapiforge/core createNet（data-or-throw/鉴权/重试）",
   );
   parts.push(" *");
-  parts.push(` * 项目：${projectDisplay} (${projectId})`);
+  parts.push(` * 项目：${projectDisplayComment} (${projectId})`);
   parts.push(` * 服务数：${serviceNames.length}`);
   parts.push(` * 总 endpoint 数：${totalEndpoints}`);
   parts.push(" *");
@@ -1298,7 +1620,7 @@ function renderIndex(
 
   // 业务对象：每个 service 一个 createNet client 字段
   parts.push("/**");
-  parts.push(` * ${projectDisplay} 业务对象`);
+  parts.push(` * ${projectDisplayComment} 业务对象`);
   parts.push(" * - 顶层 key: service 英文短码（与 xapiforge.config.ts 服务名对应）");
   parts.push(" * - client: createNet 返回的强类型 client（GET/POST/PUT/DELETE/PATCH 强类型）");
   parts.push(" * - 内核自动注入：auth/retry + validateStatus；最终失败统一抛 ApiError");

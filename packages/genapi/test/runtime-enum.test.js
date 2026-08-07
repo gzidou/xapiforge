@@ -8,6 +8,7 @@ import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { build } from "esbuild";
+import ts from "typescript";
 
 import { createRuntimeEnumHooks, generate } from "../dist/index.js";
 
@@ -149,12 +150,53 @@ test("runtime enum metadata and x-enum arrays fail fast with actionable diagnost
     );
     assert.equal(existsSync(join(root, "generated")), false);
 
+    await assert.rejects(
+      generateFixture(
+        root,
+        fixture,
+        createRuntimeEnumHooks({ metadata: { toString: { isFlags: true } } }),
+      ),
+      /metadata 引用了不存在的 schema "toString"/,
+    );
+    assert.equal(existsSync(join(root, "generated")), false);
+
     fixture.components.schemas["Fixture.DeviceState"]["x-enum-varnames"] = ["Offline"];
     await assert.rejects(
       generateFixture(root, fixture, createRuntimeEnumHooks()),
       /Fixture\.DeviceState.*x-enum-varnames 必须是长度为 2 的字符串数组/,
     );
     assert.equal(existsSync(join(root, "generated")), false);
+  });
+});
+
+test("runtime enum schema names cannot terminate generated comments", async () => {
+  await withTempProject(async (root) => {
+    const attack = "Evil */\nexport type Injected = never;\n/*";
+    const fixture = {
+      openapi: "3.0.3",
+      info: { title: "Comment fixture", version: "1.0.0" },
+      paths: {},
+      components: {
+        schemas: {
+          [attack]: {
+            type: "string",
+            enum: ["ready"],
+            "x-enum-varnames": ["Ready"],
+            "x-enum-descriptions": ["Ready"],
+          },
+        },
+      },
+    };
+    await generateFixture(root, fixture, createRuntimeEnumHooks());
+    const types = await readFile(join(root, "generated/demo/types/base.ts"), "utf8");
+    const source = ts.createSourceFile("base.ts", types, ts.ScriptTarget.Latest, true);
+    let injected = false;
+    const visit = (node) => {
+      if (ts.isTypeAliasDeclaration(node) && node.name.text === "Injected") injected = true;
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    assert.equal(injected, false);
   });
 });
 

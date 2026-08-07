@@ -149,8 +149,8 @@ async function main(): Promise<void> {
   const cli = parseCli(process.argv.slice(2));
   if (cli.help || !cli.arg) {
     printHelp();
-    if (cli.help) process.exit(0);
-    process.exit(2);
+    if (!cli.help) process.exitCode = 2;
+    return;
   }
   const config = await loadConfig(process.cwd());
   validateConfig(config);
@@ -170,7 +170,8 @@ async function main(): Promise<void> {
     cli.arg === "all" ? config.projects : config.projects.filter((p) => p.name === cli.arg);
   if (targets.length === 0) {
     console.error(`未找到项目: ${cli.arg}`);
-    process.exit(2);
+    process.exitCode = 2;
+    return;
   }
 
   // 输出目录解析顺序：CLI --outputDir > xapiforge.config.ts genOutputDir > "src/api/gen"
@@ -184,6 +185,7 @@ async function main(): Promise<void> {
       projectId: project.name,
       swaggerDir,
       outputDir,
+      configDirectory: process.cwd(),
       emitApiTypes: !cli.noTypes,
       check: cli.check,
       hooks: config.hooks,
@@ -212,11 +214,7 @@ async function main(): Promise<void> {
   );
 }
 
-main()
-  .catch((e) => {
-    console.error(`\u274c 未捕获异常: ${(e as Error).message}`);
-    process.exit(1);
-  })
-  .finally(() => {
-    process.exit(process.exitCode ?? 0);
-  });
+main().catch((error: unknown) => {
+  console.error(`\u274c 未捕获异常: ${error instanceof Error ? error.message : String(error)}`);
+  process.exitCode = 1;
+});
