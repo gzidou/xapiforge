@@ -9,14 +9,16 @@ Collect all applicable evidence:
 1. Dependency installation completed without creating a second lockfile.
 2. `xapiforge-fetch` succeeded, or offline mode found every expected OpenAPI snapshot.
 3. `xapiforge <project-id>` generated the expected service and type files.
-4. The generated factory can be imported from consumer source.
-5. Consumer TypeScript checking passes.
-6. Consumer production build passes.
-7. One safe generated request succeeds against an allowed backend or controlled mock.
-8. A representative failure is handled according to the consumer's error policy.
-9. Authentication storage and refresh are exercised when authentication is in scope.
-10. Native dependency sync/link and a platform build are exercised when a native adapter is in scope.
-11. The consumer's dependency audit is run when required by its project policy; unresolved findings are reported without an unreviewed automatic fix.
+4. A second `xapiforge <project-id> --check` reports no drift when generated artifacts are committed.
+5. The generated factory can be imported from consumer source, including the correct kebab-case service property mapping.
+6. Representative canonical/service namespace types and runtime enum metadata compile.
+7. Consumer TypeScript checking passes.
+8. Consumer production build passes.
+9. One safe generated request succeeds against an allowed backend or controlled mock and reaches the intended runtime host.
+10. A representative failure is handled according to the consumer's error policy.
+11. Authentication storage and refresh are exercised when authentication is in scope.
+12. Native dependency sync/link and a platform build are exercised when a native adapter is in scope.
+13. The consumer's dependency audit is run when required by its project policy; unresolved findings are reported without an unreviewed automatic fix.
 
 ## Diagnose by stage
 
@@ -30,7 +32,7 @@ Confirm the resolved URL without printing credentials. Separate DNS, TLS, proxy,
 
 ### Generation failure
 
-Validate that the input is OpenAPI 3.x and identify the exact service file. For non-standard schemas, implement a consumer `transformSwagger` or `transformTypes` hook and add a focused fixture. Do not patch generated output.
+Validate that the input is self-contained OpenAPI 3.x and identify the exact service source. Compare the document with actual JSON before changing it. For a confirmed non-standard schema, implement a conservative service `transformSwagger` or runtime-enum `preprocessSwagger` hook and add a focused fixture. `transformTypes` must consume `ctx.normalizedDocument`, not reread the original file. Do not patch generated output.
 
 ### Type failure
 

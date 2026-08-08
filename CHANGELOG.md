@@ -19,6 +19,7 @@ All notable changes to xapiforge are documented here.
 - Made demo download, generation, development, type checking, and production builds prepare genapi and regenerate the ignored offline API client automatically.
 - Added clear entry points for first-time integrators and maintainers.
 - Added the `xapiforge-integration` Skill for AI-assisted consumer inspection, integration, and evidence-based verification.
+- Added an integrator-focused multi-backend onboarding path covering mixed OpenAPI sources, non-standard service hooks, stable namespaces, runtime host separation, troubleshooting, and end-to-end acceptance evidence.
 - Corrected Capacitor and React Native dependency and initialization guidance.
 - Added package, scenario, native download, and documentation checks to the standard verification gate and CI.
 - Added a shared version command and partial-publish recovery support for maintainers.

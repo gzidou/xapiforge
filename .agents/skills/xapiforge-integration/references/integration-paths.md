@@ -55,11 +55,13 @@ Guide: <https://gzidou.github.io/xapiforge/getting-started/react-native>
 
 All runtimes use `@xapiforge/genapi`, `xapiforge.config.ts`, `xapiforge-fetch`, and `xapiforge`.
 
-Expected offline input:
+For a URL source, the online download and offline cache path is:
 
 ```text
 <outputDir>/<project-name>/<service-name>.json
 ```
+
+A `source.file` service always reads its configured JSON path directly, in both modes. The filename does not need to match the service ID and is not copied into the URL cache layout.
 
 Expected generated output with the default `genOutputDir: "src/api/gen"`:
 
@@ -73,10 +75,18 @@ src/api/gen/<project-name>/
 
 The generated `index.ts` exports a factory named from the configured project ID, such as `createMyappClient` for `myapp`.
 
+For service ID `legacy-orders`:
+
+- config, `SchemaOf`, and layered runtime overrides use `"legacy-orders"`;
+- the generated client property is `api.legacy_orders`;
+- the default schema namespace is `LegacyOrdersSchemas`;
+- the service type file is `types/legacy-orders.ts`.
+
 Detailed guides:
 
 - Authentication: <https://gzidou.github.io/xapiforge/guides/auth>
 - Error handling: <https://gzidou.github.io/xapiforge/guides/error-handling>
 - Middleware: <https://gzidou.github.io/xapiforge/guides/middleware>
 - genapi hooks: <https://gzidou.github.io/xapiforge/guides/genapi-hooks>
+- Multi-backend onboarding: <https://gzidou.github.io/xapiforge/getting-started/multi-backend>
 - File download: <https://gzidou.github.io/xapiforge/guides/file-download>

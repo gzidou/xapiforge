@@ -106,7 +106,7 @@ pnpm download-swagger
 pnpm generate:api all
 pnpm typecheck
 pnpm build
-pnpm generate:api all -- --check
+pnpm exec xapiforge all --check
 ```
 
 重点检查：

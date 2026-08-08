@@ -2,6 +2,8 @@
 
 本文以 Vue 3 + Vite 为例，先完成一个最小可运行请求，再按需增加登录、Token 刷新和业务 middleware。React 或其他浏览器框架使用相同的客户端初始化方式。
 
+本文假设先接入一个基本规范的后端。面对多个微服务、不同 Swagger 文件/URL、重复 schema 或 legacy enum 时，先阅读[多后端与非规范 OpenAPI 接入](./multi-backend.md)，再回到本页完成浏览器运行时初始化。
+
 ## 前置条件
 
 - Node.js >= 20.19
@@ -67,6 +69,8 @@ export default defineConfig({
 | `services[].source.url`  | 二选一 | 完整 HTTP(S) OpenAPI URL                                    |
 | `services[].source.file` | 二选一 | 本地 JSON；相对路径以配置文件所在项目根目录为基准           |
 
+service ID 使用 kebab-case 时，几个生成名称分别是：配置和 runtime override 使用原 ID（如 `"legacy-orders"`），客户端属性使用下划线（`api.legacy_orders`），类型 namespace 使用 PascalCase（`LegacyOrdersSchemas`）。完整映射见[多后端接入指南](./multi-backend.md#初始化多运行时客户端)。
+
 `mode` 有两种用途：
 
 - `online`：只下载 `source.url` 到 `outputDir/<project>/<service>.json`；`source.file` 仍直接读取。
@@ -86,7 +90,8 @@ swagger/myapp/base.json
 {
   "scripts": {
     "download-swagger": "xapiforge-fetch",
-    "generate:api": "xapiforge"
+    "generate:api": "xapiforge",
+    "check:api": "xapiforge myapp --check"
   }
 }
 ```
@@ -114,7 +119,7 @@ src/api/gen/myapp/
 提交生成产物的团队应在 CI 增加只读漂移检查：
 
 ```bash
-pnpm run generate:api -- --check
+pnpm check:api
 ```
 
 ### 4. 初始化客户端

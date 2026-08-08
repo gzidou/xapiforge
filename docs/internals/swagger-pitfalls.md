@@ -1,347 +1,213 @@
-# 典型 ABP Swagger 问题分析（业务侧 hooks 处理参考）
+# 非规范 OpenAPI 问题分类与处理边界
 
-> 本文梳理 ABP 后端生成的 swagger 中常见的不规范形态，供业务侧编写 [genapi hooks](../guides/genapi-hooks.md) 时参考。
->
-> **定位**：xapiforge 是通用工具，**内核只处理规范 OpenAPI**。ABP 等后端框架的特殊形态不属于内核职责，业务侧通过 genapi hooks 自定义处理。本文是「问题清单」而非「内核待办」。
+本文供接入 ABP、Spring Boot、NestJS 或历史服务时排查 OpenAPI 使用。它不是框架规则大全，也不是 xapiforge 内核待办。
 
-## 一、问题全景
+xapiforge 内核处理规范、自包含的 OpenAPI 3.x。只有已经通过实际请求/响应确认的服务差异，才由业务侧 service hook 保守规范化。完整接入顺序见[多后端与非规范 OpenAPI 接入](../getting-started/multi-backend.md)。
 
-| #   | 问题                                                   | 典型频率 | 类型正确性    | openapi-typescript 默认行为  | 业务侧处理方式（via hooks）                                                                 |
-| --- | ------------------------------------------------------ | -------- | ------------- | ---------------------------- | ------------------------------------------------------------------------------------------- |
-| 1   | 枚举 B 类 `"Alpha(选项一)=1"` 字符串描述               | 高       | ❌ 破坏       | 出字符串 union，与运行时矛盾 | transformSwagger 规范化 + transformTypes 追加 enum map（见 [枚举方案](../guides/enums.md)） |
-| 2   | 枚举 A 类纯数字无 name                                 | 中       | ✅ 但魔法数字 | 出数字 union，能用但可读性差 | transformTypes 生成 items（无 key），业务 meta 补全                                         |
-| 3   | `nullable: true`（OpenAPI 3.0 风格）                   | 极高     | ⚠️ 看实现     | v7 自动处理 → `T \| null`    | 无需处理                                                                                    |
-| 4   | `Volo.Abp.*` schema 污染                               | 极高     | ⚠️ 类型膨胀   | 全部生成，类型文件臃肿       | transformSwagger 过滤 schema 白名单                                                         |
-| 5   | `/api/abp/*` 系统端点泄漏                              | 高       | ⚠️ 噪声       | 生成 client 方法             | transformSwagger 过滤 paths 黑名单                                                          |
-| 6   | `extraProperties: { additionalProperties: {} }` 空字典 | 高       | ⚠️ 过严       | 出 `Record<string, never>`   | transformSwagger 改 `additionalProperties: true`                                            |
-| 7   | `concurrencyStamp` 乐观锁字段                          | 中       | ✅            | 出 `string \| null`          | 无需处理（业务契约）                                                                        |
-| 8   | `format: int64`（long）JS 精度                         | 中       | ⚠️ JS 精度    | 出 `number`，超 2^53 丢精度  | transformSwagger 改 `type: string`（需 net 配合解析）                                       |
-| 9   | `format: date-time`                                    | 高       | ✅            | 出 `string`（ISO 8601）      | 无需处理                                                                                    |
-| 10  | `additionalProperties: false`                          | 中       | ✅            | 不出索引签名（更严格）       | 无需处理                                                                                    |
+## 先按层分类
 
----
+| 现象                                                         | 风险                                | 正确处理                                             |
+| ------------------------------------------------------------ | ----------------------------------- | ---------------------------------------------------- |
+| OpenAPI 2、非法对象、无法解析或外部 `$ref`                   | 无法确定生成输入                    | 修复/预处理为自包含 OpenAPI 3.x                      |
+| enum 值类型与 schema type 不一致                             | 生成类型与真实值可能相反            | 对照真实 JSON，service `preprocessSwagger` 整体转换  |
+| enum 只有数字、没有成员名                                    | 类型正确但页面只能写魔法数字        | 用经过审核的业务映射补 `x-enum-varnames/labels`      |
+| `nullable: true`、`date-time`、`additionalProperties: false` | 通常是合法 OpenAPI 3.0 语义         | 先保留并检查生成类型，不要为了“看起来复杂”改写       |
+| 框架内部 path/component                                      | 补全噪声或暴露不应调用的 API        | 优先让后端生成业务文档；否则精确过滤 path 并验证引用 |
+| `additionalProperties: {}` 与实际任意对象不符                | 可能生成过严字典                    | 确认运行时后改为 `additionalProperties: true`        |
+| `int64` 实际以 JSON number 发送                              | 超过 53 位后运行时已丢精度          | 后端改为字符串序列化并同步 OpenAPI                   |
+| 跨 service 同名 schema                                       | 不是错误                            | 保持独立 service namespace，不合并 Swagger           |
+| 缺少 `operationId` 或 tags                                   | 可读性较差，但 path/method 仍可生成 | 可推动后端改善；通常不需要 hook                      |
+| 业务 `{ code, data }` envelope                               | 运行时响应协议                      | middleware，不是生成 hook                            |
+| CORS、证书、代理或主机错误                                   | 运行环境问题                        | 网络层、代理或 client `baseURL`                      |
 
-## 二、问题 1:枚举 B 类字符串描述
+## legacy integer enum
 
 ### 现象
+
+schema 声明 integer，enum 却是带说明的字符串：
 
 ```json
 {
-  "Example.Sample.State": {
-    "type": "integer",
-    "format": "int32",
-    "enum": ["Alpha(选项一)=1", "Beta(选项二)=2"]
-  }
+  "type": "integer",
+  "enum": ["Alpha(选项一)=1", "Beta(选项二)=2"]
 }
 ```
 
-### 根因
-
-ABP / Swashbuckle 配置 `DescribeAllEnumsAsStrings: true` + `StringEnumConverter`，把枚举序列化成 `"Name(Description)=Value"` 形态。但 `type` 字段仍是 `integer`，违反 OpenAPI 规范（`enum` 值类型必须与 `type` 一致）。
-
-### 影响
-
-openapi-typescript 出 `"Alpha(选项一)=1" | "Beta(选项二)=2"`，TS 说传字符串，但后端收发数字。业务侧必须 `as any`，类型保护失效。
-
-### 业务侧处理（via hooks）
-
-**Hook 2 `transformSwagger`**：正则 `^([A-Za-z_][\w]*)\(([^)]*)\)=(\d+)$` 拆出 key/label/value，改写为 `enum: [1,2]` + `x-enum-varnames` + `x-enum-labels`。
-
-**Hook 3 `transformTypes`**：扫规范化后的 swagger 生成 `enums/<svc>.ts` runtime map。
-
-详见 [枚举方案](../guides/enums.md)。
-
----
-
-## 三、问题 2:枚举 A 类纯数字无 name
-
-### 现象
+这违反 enum 值必须与 schema type 一致的约束。先通过真实响应确认后端确实发送 `1/2`，再规范化为：
 
 ```json
 {
-  "MessageType": {
-    "type": "integer",
-    "enum": [0, 1, 2, 3, 4, 5]
-  }
+  "type": "integer",
+  "enum": [1, 2],
+  "x-enum-varnames": ["Alpha", "Beta"],
+  "x-enum-labels": ["选项一", "选项二"]
 }
 ```
 
-### 根因
+使用 `createRuntimeEnumHooks({ preprocessSwagger, metadata })`，让 schema union、运行时 const、Options、label 和页面扩展共享同一份 normalized document。可复制的保守解析器见[多后端接入示例](../getting-started/multi-backend.md#保守处理-legacy-enum)。
 
-后端 enum 没加 `[Description]` 特性，Swashbuckle 直接出数字。swagger 里**没有 key 信息**。
+处理原则：
 
-### 影响
+- 从字符串末尾解析实际值，允许 label 中包含普通括号或等号；
+- 只有整个 enum 都能解析时才转换；
+- value 必须是安全整数且不能重复；
+- name 必须是合法、非保留的 TypeScript 标识符且不能重复；
+- 无法识别时失败或保留原样，不能部分转换或猜默认值；
+- 不修改磁盘上的原 Swagger。
 
-类型正确（`0 | 1 | 2 | 3 | 4 | 5`），但业务侧 `if (msg.type === 2)` 是魔法数字。
-
-### 业务侧处理（via hooks）
-
-**Hook 3 `transformTypes`**：仍生成 `MessageTypeEnum = { items: [{ value: 0 }, ...] }`，但 key/label 缺失。
-
-**业务 meta 文件**：用 `Record<number, { key, label }>` 补全。genapi **无法自动补 key**（信息不在 swagger 里）。
-
----
-
-## 四、问题 3:`nullable: true`
-
-### 现象
-
-几乎所有引用类型字段都带 `"nullable": true`。
-
-### 根因
-
-OpenAPI 3.0 用 `nullable: true` 表示可空，3.1 改用 `type: ["string", "null"]`。ABP 默认输出 3.0 风格。
-
-### 影响
-
-openapi-typescript v7 自动处理 → `string | null`。**类型正确，无需处理**。
-
-### 业务侧处理
-
-无需处理。后端升级到 OpenAPI 3.1 后 `nullable` 字段消失，openapi-typescript 也能识别 3.1 写法。
-
----
-
-## 五、问题 4:`Volo.Abp.*` schema 污染
-
-### 现象
-
-`components.schemas` 里有大量 `Volo.Abp.*` 命名空间的 schema（`ApplicationApiDescriptionModel`、`RemoteServiceErrorResponse` 等）。这些是 ABP 框架内部 metadata API 暴露的类型，**不是业务类型**。
-
-### 根因
-
-ABP 默认把所有 controller（包括框架自带的 `AbpApiDefinitionController` 等）注册到 swagger，其返回类型被 dump 进 `components.schemas`。
-
-### 影响
-
-- 类型文件膨胀：`types/<svc>.ts` 多出几十个 `Volo.Abp.*` 定义
-- IDE 自动补全噪声：跳出框架内部类型
-- 构建慢：openapi-typescript 处理所有 schema
-
-### 业务侧处理（via hooks）
-
-**Hook 2 `transformSwagger`**：删掉 `components.schemas` 里 key 以 `Volo.Abp.` 开头的 schema。引用侧 `$ref` 改成 `unknown` 或删字段。
-
-```ts
-// 业务侧 hook 示例（非内核代码）
-transformSwagger(json, ctx) {
-  const schemas = json.components?.schemas;
-  if (schemas) {
-    for (const key of Object.keys(schemas)) {
-      if (key.startsWith("Volo.Abp.")) delete schemas[key];
-    }
-  }
-}
-```
-
----
-
-## 六、问题 5:`/api/abp/*` 系统端点泄漏
-
-### 现象
-
-每个 swagger 的 `paths` 里都有 ABP 框架端点：
-
-- `/api/abp/api-definition`
-- `/api/abp/application-configuration`
-- `/api/abp/application-localization`
-- `/api/abp/multi-tenancy/tenants/by-name/{name}`
-- `/api/abp/multi-tenancy/tenants/by-id/{id}`
-
-### 根因
-
-ABP 默认注册这些框架 controller。
-
-### 影响
-
-业务侧 `api.GET("/api/abp/...")` 能调通但**不应该调**（框架内部 API，版本升级后可能变更）。生成的 client 有这些方法，造成噪声。
-
-### 业务侧处理（via hooks）
-
-**Hook 2 `transformSwagger`**：删掉 `paths` 里 key 以 `/api/abp/` 开头的端点。
-
-```ts
-// 业务侧 hook 示例
-transformSwagger(json, ctx) {
-  const paths = json.paths;
-  if (paths) {
-    for (const path of Object.keys(paths)) {
-      if (path.startsWith("/api/abp/")) delete paths[path];
-    }
-  }
-}
-```
-
----
-
-## 七、问题 6:`extraProperties: { additionalProperties: {} }` 空字典
-
-### 现象
-
-ABP DTO 基类 `ExtensibleEntity` 自带 `extraProperties` 字段：
+### 只有数字，没有 name
 
 ```json
-"extraProperties": {
+{ "type": "integer", "enum": [0, 1, 2] }
+```
+
+这里的 `0 | 1 | 2` 类型本身正确，但 OpenAPI 没有提供 `Pending/Running/Done` 等成员信息。生成器不能凭数字推断名称。
+
+如果业务有权威映射，在目标 service 的 `preprocessSwagger` 中补齐：
+
+```ts
+schema["x-enum-varnames"] = ["Pending", "Running", "Done"];
+schema["x-enum-labels"] = ["待处理", "处理中", "已完成"];
+```
+
+然后交给 `createRuntimeEnumHooks`。映射必须跟随业务代码审查；metadata 的 label 覆盖不能替代缺失的成员身份。
+
+## nullable、日期和对象约束
+
+### `nullable: true`
+
+OpenAPI 3.0 使用 `nullable: true`，OpenAPI 3.1 通常使用包含 `null` 的类型。当前生成链可以处理规范输入。先检查生成结果是否为预期的 `T | null`，不要统一删除 nullable。
+
+可空和可选是两件事：
+
+- `nullable` 决定值能否为 `null`；
+- `required` 决定属性能否缺失。
+
+hook 不应把两者混成同一个规则。
+
+### `format: date-time`
+
+默认生成 `string`，因为 JSON 传输的是字符串。业务在边界处按需要解析 `Date`；不要把生成类型全局改成 `Date`，除非运行时解析也同步完成并经过验证。
+
+### `additionalProperties: false`
+
+表示对象不接受任意额外属性，通常应保留。它不是“类型缺字段”的自动修复目标。
+
+### 空 `additionalProperties`
+
+部分后端输出：
+
+```json
+{
   "type": "object",
-  "additionalProperties": {},
-  "nullable": true
+  "additionalProperties": {}
 }
 ```
 
-### 影响
-
-openapi-typescript 出 `Record<string, never> | null`（`additionalProperties: {}` 被解释成"不接受任何属性"）。**类型过严**，`dto.extraProperties.foo` TS 报错。
-
-### 业务侧处理（via hooks）
-
-**Hook 2 `transformSwagger`**：把 `additionalProperties: {}` 改成 `additionalProperties: true`，openapi-typescript 出 `Record<string, unknown>`。
-
----
-
-## 八、问题 7:`concurrencyStamp` 乐观锁字段
-
-### 现象
-
-ABP 实体基类 `IHasConcurrencyStamp` 自带 `concurrencyStamp: string nullable`。
-
-### 影响
-
-类型正确。业务侧 PUT 时需把 GET 拿到的 `concurrencyStamp` 原样回传（乐观锁契约）。
-
-### 业务侧处理
-
-无需处理。这是 ABP 的业务契约，不应过滤。文档里提醒业务侧："PUT 实体时记得透传 `concurrencyStamp`"。
-
----
-
-## 九、问题 8:`format: int64` JS 精度问题
-
-### 现象
-
-后端 `long` 字段（如 Snowflake ID）：
+如果实际响应允许任意 JSON 属性，而生成结果过严，可在目标 schema 上精确改为：
 
 ```json
-"id": { "type": "integer", "format": "int64" }
+{ "type": "object", "additionalProperties": true }
 ```
 
-### 影响
+不要递归替换所有空 schema；空 schema 在 example、组合 schema 或其它位置可能有不同语义。
 
-C# `long` 是 64 位，JS `number` 只有 53 位精度。超过 `2^53 - 1` 的 ID 会丢精度，PUT 时回传错误 ID 导致更新错记录。
+## 框架内部 path 和 component
 
-### 业务侧处理（via hooks + net 配合）
-
-**Hook 2 `transformSwagger`**：把 `format: int64` 的字段 `type` 改成 `string`。
-
-**net 包配合**：响应解析需用支持大数字符串的 JSON 解析器（构建时 + 运行时协同）。
+ABP 常见 `/api/abp/*`，其它框架也可能暴露 actuator、metadata 或内部管理端点。若前端明确不应调用，可精确删除 path：
 
 ```ts
-// 业务侧 hook 示例
-transformSwagger(json, ctx) {
-  const walk = (schema: any) => {
-    if (schema?.format === "int64") {
-      schema.type = "string";
-      delete schema.format;
-    }
-    for (const k of Object.keys(schema ?? {})) {
-      if (typeof schema[k] === "object") walk(schema[k]);
-    }
-  };
-  // 遍历 schemas 和 paths
+for (const path of Object.keys(document.paths)) {
+  if (path.startsWith("/api/abp/")) delete document.paths[path];
 }
 ```
 
----
+删除 component 比删除 path 风险高。不要看到 `Volo.Abp.*`、`Page*` 或 `Internal*` 前缀就批量删除：
 
-## 十、问题 9/10:`date-time` / `additionalProperties: false`
+- 业务 path 可能仍通过 `$ref` 引用它；
+- 把引用改成 `unknown` 会掩盖真实契约；
+- 名称看起来像框架类型不代表运行时不会返回。
 
-### 问题 9:`format: date-time`
+优先让后端提供只包含业务 controller 的 OpenAPI。如果必须裁剪 component，应使用可复现的引用可达性分析，并为保留/删除的 path、schema 和 `$ref` 完整性编写 fixture 测试。生成器会在写正式目录前拒绝悬空引用。
 
-openapi-typescript 出 `string`（ISO 8601）。类型正确，业务侧需自己 `new Date(str)`。无需处理。
+## int64 与 JS 精度
 
-### 问题 10:`additionalProperties: false`
+OpenAPI：
 
-openapi-typescript 不出索引签名（类型更严格）。是好事，无需处理。
-
----
-
-## 十一、处理优先级
-
-| 优先级 | 问题                   | 处理方式                                          | Hook       |
-| ------ | ---------------------- | ------------------------------------------------- | ---------- |
-| **P0** | 问题 1 枚举 B 类       | transformSwagger 规范化 + transformTypes 追加 map | Hook 2 + 3 |
-| **P0** | 问题 4 Volo.Abp schema | transformSwagger 过滤                             | Hook 2     |
-| **P0** | 问题 5 /api/abp/* 端点 | transformSwagger 过滤                             | Hook 2     |
-| **P1** | 问题 8 int64 精度      | transformSwagger 改类型 + net 配合                | Hook 2     |
-| **P2** | 问题 2 枚举 A 类       | transformTypes + 业务 meta                        | Hook 3     |
-| **P2** | 问题 6 extraProperties | transformSwagger 改 additionalProperties          | Hook 2     |
-| **P3** | 问题 3/7/9/10          | 无需处理                                          | -          |
-
----
-
-## 十二、genapi hooks 机制
-
-上述所有「业务侧处理」均通过 genapi hooks 实现，详见 [genapi hooks 设计](../guides/genapi-hooks.md)。
-
-hooks 体系提供 6 个插入点覆盖完整生成流程：
-
-```
-download → [Hook 1] → disk → [Hook 2 主钩子] → openapi-typescript → [Hook 3] → types.ts
-                                                                              ↓
-                                              [Hook 4] ← api-types.ts ← render
-                                                                              ↓
-                                              [Hook 5] ← index.ts ← render
-                                                                              ↓
-                                              [Hook 6] ← onComplete
+```json
+{ "type": "integer", "format": "int64" }
 ```
 
-**关键设计**：
+若后端发送 JSON number，超过 `Number.MAX_SAFE_INTEGER` 后，JavaScript 在解析阶段已经失去精度。下面做法是错误的：
 
-- Hook 2 (`transformSwagger`) 是主钩子——所有 swagger 定制在此完成
-- 内核不硬编码任何 ABP / SpringBoot / NestJS 特殊逻辑
-- 业务侧在 `xapiforge.config.ts` 中配置 hooks，下载脚本和 generate 共用
-
----
-
-## 十三、验证策略
-
-### 13.1 单测
-
-业务侧为自己的 hooks 编写单测，构造最小 swagger fixture：
-
-```
-test/fixtures/
-├── enum-B.json          # 问题 1
-├── enum-A.json          # 问题 2
-├── volo-abp-schema.json # 问题 4
-├── abp-paths.json       # 问题 5
-├── int64.json           # 问题 8
-└── extra-props.json     # 问题 6
+```ts
+// 错误：只改变静态类型，运行时仍收到已经失真的 number。
+schema.type = "string";
 ```
 
-### 13.2 集成验证
+正确方案是后端把该字段按 JSON string 发送，并把 OpenAPI 同步为 `type: string`。前端确认实际响应已是字符串后，才可以用 service hook 修正尚未更新的文档，并记录这是临时兼容。
 
-业务侧在自己的 app 项目中跑 `pnpm generate:api`，diff 产物：
+对数据库主键、雪花 ID、游标、版本号和金额最小单位尤其要检查实际序列化。
 
-- `types/` 文件大小应显著缩小（问题 4 过滤后）
-- `enums/` 新目录生成（问题 1/2）
-- `api-types.ts` 不再出现 `Volo.Abp.*` alias（问题 4）
-- client 不再有 `/api/abp/*` 方法（问题 5）
+## OpenAPI 引用
 
-### 13.3 回归
+xapiforge 要求生成输入自包含：语义位置的 `$ref` 必须是可解析的内部引用。以下情况会失败：
 
-在 `examples/demo-app/` 跑 `pnpm generate:api`，确认 demo-app 的人造 swagger 不受 hooks 影响（demo-app 不配置 hooks 时产物不变）。
+- 指向不存在 component 的内部 `$ref`；
+- 文件或 HTTP 外部 `$ref`；
+- 非法 JSON Pointer；
+- `$ref` 指向不符合目标 OpenAPI 对象形态的值。
 
----
+需要多文件维护时，在受控上游流程中固定版本并 bundle 成单一 OpenAPI，再把 bundle 结果作为 `source.file` 或 URL 缓存。不要让生成阶段临时访问未经锁定的外部引用。
 
-## 十四、与其他分类后端框架的类比
+example、default、Example Object 的 `value` 和 `x-*` 扩展内恰好叫 `$ref` 的业务字段按普通数据保留，不应由业务 hook 删除。
 
-ABP 的问题模式在其他分类后端框架中也有类似表现：
+## 重复 schema 和命名冲突
 
-| 后端框架               | 类比问题                      | 对应 hook                                  |
-| ---------------------- | ----------------------------- | ------------------------------------------ |
-| SpringBoot             | `Page<T>` 包装类型膨胀        | transformSwagger 展开/替换泛型 schema      |
-| SpringBoot             | `Map<String, Object>` 丢类型  | transformSwagger 补 `additionalProperties` |
-| NestJS                 | 自定义 decorator 的 `x-` 扩展 | transformSwagger 提取/转换                 |
-| GraphQL → OpenAPI 转换 | 类型名冲突                    | transformSwagger 重命名                    |
+不同 service 都包含 `Shared.Result`、`UserDto` 或框架公共 DTO 是正常情况。canonical identity 包含 project、service 和 full schema name：
 
-**核心思路一致**：内核处理规范 OpenAPI，框架特殊形态走 hooks。
+```ts
+type CatalogResult = SchemaOf<"catalog", "Shared.Result">;
+type OrderResult = SchemaOf<"legacy-orders", "Shared.Result">;
+```
+
+默认便利入口分别是 `CatalogSchemas.Result` 和 `LegacyOrdersSchemas.Result`。不要合并 Swagger，也不要为跨 service 重复维护成百上千条 alias。
+
+只有同一 service、同一 namespace 内的不同 full name 产生相同短名时才配置精确 alias。冲突诊断会列出两个完整 identity。
+
+## 当前 hook 边界
+
+当前公开两个 hook：
+
+```text
+读取原 Swagger
+  → transformSwagger
+  → 固定 normalizedDocument
+  → openapi-typescript
+  → transformTypes
+  → 事务提交 types/index/api-types/manifest
+```
+
+- `transformSwagger`：返回新的规范化文档，不修改原文件；
+- `transformTypes`：只根据 `typesContent` 和 `ctx.normalizedDocument` 追加确定性内容；
+- runtime enum helper 在 `transformSwagger` 合并 metadata 一次，在 service 类型文件追加运行时导出，并在 `api-types.ts` 按 namespace 重导出；
+- 当前没有 `transformDownloaded`、`transformApiTypes`、`transformIndex`、独立 `enums/` 目录或 `onComplete` hook。
+
+root、project、service hook 使用整对象覆盖，优先级为 `service > project > root`；service 配置 `{}` 会显式禁用继承。
+
+## 业务 hook 验证
+
+每种异常准备最小、脱敏 fixture，不要把真实业务 Swagger 提交到工具仓库。至少验证：
+
+1. 原 Swagger 文件保持不变；
+2. 规范化后的类型与真实 JSON 值一致；
+3. 任意一项无法识别时不会部分转换；
+4. 删除 path/schema 后没有悬空 `$ref`；
+5. endpoint、schema namespace、manifest 和 runtime enum 使用同一 normalized document；
+6. enum const、Options、label 和页面扩展可由独立 TypeScript 消费者编译；
+7. 错误配置在正式输出写入前失败，旧生成目录保持有效；
+8. 第二次 `--check` 输出 `UNCHANGED`；
+9. 改变一个 service 不会移动其它 service 的公开类型；
+10. 至少观察一个真实或 mock 请求，确认运行时响应与生成类型一致。
+
+不要在 hook 中写真实域名、凭据、当前时间、随机值或未锁定远程依赖。详细 API 见[genapi Hooks](../guides/genapi-hooks.md)和[枚举生成](../guides/enums.md)。

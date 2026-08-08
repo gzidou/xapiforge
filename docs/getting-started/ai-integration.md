@@ -37,6 +37,8 @@ cp -R .agents/skills/xapiforge-integration "${CODEX_HOME:-$HOME/.codex}/skills/"
 
 Skill 会读取项目锁文件、依赖、配置、OpenAPI 文件和现有 API/Auth 代码。它不会读取不到后端协议时自行编造；缺少 OpenAPI 地址、base URL 或刷新协议时，会要求接入者提供。
 
+多后端或非规范 Swagger 项目还应要求 AI 逐 service 记录来源、运行时地址和已确认的不规范形态，并按[多后端与非规范 OpenAPI 接入](./multi-backend.md)区分 hook、runtime middleware 和后端修复。不要接受“生成成功”作为唯一验收证据。
+
 ## AI 应该交付什么
 
 一次完成的接入至少应说明：

@@ -2,6 +2,17 @@
 
 genapi 内核只处理标准 OpenAPI。后端框架或历史服务的特殊 Swagger 形态通过业务 hooks 适配，不进入通用默认规则。
 
+第一次接入时不要先写 hook。先用原始文档生成并对照实际请求/响应，再决定问题属于生成输入、运行时协议还是后端本身。完整接入顺序见[多后端与非规范 OpenAPI 接入](../getting-started/multi-backend.md)。
+
+| 现象                                      | 应使用的层                                             |
+| ----------------------------------------- | ------------------------------------------------------ |
+| enum/schema/path 与已确认的实际协议不一致 | `transformSwagger` 或 runtime enum `preprocessSwagger` |
+| 页面 label、颜色、图标和 Options          | runtime enum metadata                                  |
+| `{ code, data }` 等响应 envelope          | runtime middleware                                     |
+| 不同 service 的 API 主机                  | 生成客户端 `defaults/services`                         |
+| CORS、证书、代理                          | 运行环境或网络配置                                     |
+| 大整数已按 JSON number 发送并丢精度       | 后端改为字符串序列化，不能只改类型                     |
+
 当前公开两个 hook：
 
 ```ts
@@ -163,7 +174,7 @@ helper 在 `transformSwagger` 阶段合并 metadata 一次；`transformTypes` �
 
 ```bash
 pnpm --filter '@xapiforge/genapi' test
-pnpm run generate:api -- --check
+pnpm exec xapiforge your-project --check
 ```
 
 不要在 hook 中：
@@ -173,5 +184,9 @@ pnpm run generate:api -- --check
 - 访问未锁定的远程 `$ref`；
 - 把组织名、内网地址或真实业务数据放进 fixture；
 - 静默猜测无法识别的历史格式。
+- 把下载 URL 当作运行时 `baseURL`；
+- 只修改 TypeScript 类型却不确认真实 JSON 序列化；
+- 删除仍被业务 path/schema 引用的 component；
+- 为解决跨 service 同名 schema 而合并文档或批量配置 alias。
 
 完整多服务契约见 [genapi v2](./genapi-v2.md)。

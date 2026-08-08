@@ -63,7 +63,8 @@ export default defineConfig({
 {
   "scripts": {
     "download-swagger": "xapiforge-fetch",
-    "generate:api": "xapiforge"
+    "generate:api": "xapiforge",
+    "check:api": "xapiforge myapp --check"
   }
 }
 ```
@@ -73,9 +74,12 @@ export default defineConfig({
 ```bash
 pnpm download-swagger
 pnpm generate:api myapp
+pnpm check:api
 ```
 
 下一步按[浏览器应用接入](https://gzidou.github.io/xapiforge/getting-started/browser)创建 `AuthService` 并初始化生成的客户端。Capacitor 和 React Native 项目先看[接入方式选择](https://gzidou.github.io/xapiforge/getting-started/)；它们的代码生成步骤相同，只是网络和 TokenStore 适配方式不同。
+
+同时面对多个微服务、重复 schema 或非规范 Swagger 时，从[多后端与非规范 OpenAPI 接入](https://gzidou.github.io/xapiforge/getting-started/multi-backend)开始，不要把多个 Swagger 合并成一个文件。
 
 ## 使用 AI 接入
 

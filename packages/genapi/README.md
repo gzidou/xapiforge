@@ -21,7 +21,8 @@ Add scripts to your application's `package.json`:
 {
   "scripts": {
     "download-swagger": "xapiforge-fetch",
-    "generate:api": "xapiforge"
+    "generate:api": "xapiforge",
+    "check:api": "xapiforge myapp --check"
   }
 }
 ```
@@ -63,7 +64,7 @@ Project and service IDs must use kebab-case. Every service requires either `sour
 ```bash
 pnpm download-swagger
 pnpm generate:api myapp
-pnpm run generate:api -- --check
+pnpm check:api
 ```
 
 `--check` is read-only and returns non-zero when generated output has drifted.
@@ -134,3 +135,5 @@ The helper emits runtime constants, labels, names, options, lookup helpers, JSON
 Non-standard Swagger normalization belongs in a business `preprocessSwagger` hook; it is not a generator default.
 
 For offline specifications and initialization, see the [browser onboarding guide](https://gzidou.github.io/xapiforge/getting-started/browser). For v2 multi-service configuration, aliases, transactions, hooks, and migration, see the [genapi v2 guide](https://gzidou.github.io/xapiforge/guides/genapi-v2).
+
+For a step-by-step integration workflow covering mixed URL/file sources, non-standard backend documents, service-specific hooks, namespace usage, and runtime verification, see [multi-backend onboarding](https://gzidou.github.io/xapiforge/getting-started/multi-backend).

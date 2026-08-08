@@ -2,6 +2,8 @@
 
 标准 OpenAPI enum 默认仍由 openapi-typescript 生成 literal union。页面需要运行时常量、Options、label、颜色或图标时，在对应 service 显式启用 `createRuntimeEnumHooks`；后端非标准格式先由业务 `preprocessSwagger` 规范化。
 
+接入多个后端时先确认实际 JSON 值，再按[多后端接入流程](../getting-started/multi-backend.md#保守处理-legacy-enum)编写 service 级 normalizer。不要根据框架名称全局猜测 enum 格式。
+
 ## 标准输入
 
 ```json

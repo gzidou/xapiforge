@@ -120,13 +120,12 @@ if (runtimeSignals.reactNative || runtimeSignals.expo) {
 }
 
 const configCandidates = [];
-for (const file of [
-  "xapiforge.config.ts",
-  "xapiforge.config.mts",
-  "xapiforge.config.js",
-  "xapiforge.config.mjs",
-]) {
+for (const file of ["xapiforge.config.ts", "xapiforge.config.js"]) {
   if (await exists(join(projectRoot, file))) configCandidates.push(file);
+}
+const unsupportedConfigCandidates = [];
+for (const file of ["xapiforge.config.mts", "xapiforge.config.mjs"]) {
+  if (await exists(join(projectRoot, file))) unsupportedConfigCandidates.push(file);
 }
 
 const projectSignals = [];
@@ -146,8 +145,10 @@ const xapiforgeDependencies = Object.fromEntries(
   Object.entries(dependencies).filter(([name]) => name.startsWith("@xapiforge/")),
 );
 const relevantScripts = Object.fromEntries(
-  Object.entries(manifest?.scripts ?? {}).filter(([, command]) =>
-    /xapiforge|swagger|openapi|typecheck|build|lint|test/i.test(String(command)),
+  Object.entries(manifest?.scripts ?? {}).filter(([name, command]) =>
+    /xapiforge|swagger|openapi|typecheck|build|lint|test|verify/i.test(
+      `${name} ${String(command)}`,
+    ),
   ),
 );
 
@@ -160,6 +161,11 @@ if (!recommendedAdapter)
   warnings.push(
     "runtime is ambiguous; inspect application entry files before selecting an adapter",
   );
+if (unsupportedConfigCandidates.length > 0) {
+  warnings.push(
+    `unsupported xapiforge config extension: ${unsupportedConfigCandidates.join(", ")}; use xapiforge.config.ts or xapiforge.config.js`,
+  );
+}
 
 console.log(
   JSON.stringify(
@@ -173,6 +179,7 @@ console.log(
       recommendedAdapter,
       xapiforgeDependencies,
       configCandidates,
+      unsupportedConfigCandidates,
       openApiFiles: await findOpenApiFiles(projectRoot),
       projectSignals,
       relevantScripts,

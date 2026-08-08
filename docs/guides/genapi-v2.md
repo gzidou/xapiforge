@@ -2,6 +2,8 @@
 
 genapi v2 是破坏性版本，不保留旧的 Swagger URL 片段配置或旧类型导出。目标是让 OpenAPI 来源、service 身份和公开类型身份彼此独立，并在真实多微服务项目中保持可预测。
 
+第一次接入多个后端时，先按[多后端与非规范 OpenAPI 接入](../getting-started/multi-backend.md)收集真实协议、原样生成并分类问题；本页是配置和稳定性契约参考。
+
 ## 完整配置
 
 ```ts
@@ -67,6 +69,17 @@ const remoteSource = { url: "https://api.example.test/openapi.json" };
 - `source.url` 是完整 HTTP(S) URL，不再拼接 host、port 或 path。
 - 修改文件名、目录或 URL，不会改变 service/type 身份。
 
+同一个 kebab-case service ID 会以不同、确定的形式出现在公开 API 中：
+
+| 位置                                       | `legacy-orders` 的结果   |
+| ------------------------------------------ | ------------------------ |
+| 配置、canonical identity、runtime override | `"legacy-orders"`        |
+| service 类型文件                           | `types/legacy-orders.ts` |
+| 生成客户端属性                             | `api.legacy_orders`      |
+| service namespace                          | `LegacyOrdersSchemas`    |
+
+不要尝试使用 `api.legacy-orders`；它会被 JavaScript 解释为减法。生成器在配置阶段还会拒绝会映射为相同 TypeScript 名称或 runtime key 的 service ID。
+
 `xapiforge-fetch` 的行为：
 
 - `source.file`：直接校验 JSON，不复制文件。
@@ -110,6 +123,8 @@ export type SchemaOf<Service extends keyof SchemasByService, Name extends keyof 
 ```
 
 v2 不生成 `AllSchemas`，也不会把多个 service 的 schema 交叉合并。三种导出策略都保留这组 canonical API；差别只在是否额外生成便利短名。
+
+跨 service 的重复 full schema name 是合法输入，不需要 hook 或 alias。只有同一 service、同一便利 namespace 中出现短名碰撞时，才需要一条精确 alias。
 
 ## 三种导出策略
 
@@ -232,12 +247,34 @@ genapi 保证以下变化不改变未受影响 identity 的访问路径：
 
 生成器会递归排序 JSON 对象 key、保留数组顺序，并按稳定 service/schema 顺序渲染。冲突会在正式写盘前失败；不会按出现顺序静默跳过，也不会自动追加后缀。
 
+## 下载地址不是运行时地址
+
+`source.url` 只负责取得 OpenAPI。页面发请求的 `baseURL` 在创建客户端时配置，二者可能属于完全不同的域名、网关或网络环境：
+
+```ts
+const api = createDcenterClient({
+  defaults: {
+    baseURL: "https://api.example.test",
+    authService
+  },
+  services: {
+    "fill-center": {
+      baseURL: "https://fill.example.test"
+    }
+  }
+});
+
+await api.fill_center.GET("/api/reports");
+```
+
+`services` override 使用原始 service ID；客户端属性使用安全的下划线形式。middleware 数组使用整体替换语义，不会自动和 defaults 拼接。
+
 ## 验证
 
 ```bash
 pnpm download-swagger
 pnpm generate:api dcenter
-pnpm generate:api dcenter -- --check
+pnpm exec xapiforge dcenter --check
 ```
 
 `--check` 只比较 staging 与正式产物，不写正式目录。生成采用整 project 事务替换；任何 service、hook、类型或 alias 失败时，旧产物保持不变。

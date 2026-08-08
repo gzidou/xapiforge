@@ -8,14 +8,18 @@ xapiforge 的代码生成方式在各运行环境中相同。真正不同的是 
 | Ionic / Capacitor         | `@xapiforge/adapter-capacitor`    | [Ionic / Capacitor 接入](./ionic-capacitor.md) |
 | React Native              | `@xapiforge/adapter-react-native` | [React Native 接入](./react-native.md)         |
 
+如果同时接入多个微服务，或 Swagger 存在 legacy enum、错误 schema、重复类型和内部端点，先按[多后端与非规范 OpenAPI 接入](./multi-backend.md)建立 service 身份、问题分层和验证基线，再回到对应运行环境选择 adapter。
+
 使用 AI 编程工具接入时，可以安装仓库提供的 `xapiforge-integration` Skill。安装和调用方法见[使用 AI 接入](./ai-integration.md)。Skill 会先识别接入项目，不会替你猜测 OpenAPI 地址或认证协议。
 
-## 所有项目都要完成的四件事
+## 所有项目都要完成的六件事
 
-1. 安装 `@xapiforge/core`、`@xapiforge/genapi` 和一个运行时 adapter。
-2. 创建 `xapiforge.config.ts`，配置 OpenAPI 地址和生成目录。
-3. 执行 `xapiforge-fetch` 和 `xapiforge`，得到强类型客户端。
-4. 创建 `AuthService`，把它和对应的 TokenStore 传给生成客户端。
+1. 确认 OpenAPI 来源、实际运行时地址、鉴权协议和至少一个真实响应样本。
+2. 安装 `@xapiforge/core`、`@xapiforge/genapi` 和一个运行时 adapter。
+3. 为每个后端配置稳定 service ID 和独立 `source.file|url`。
+4. 原样生成一次；只对已经确认的不规范形态添加 service hook。
+5. 创建 `AuthService`，按真实运行时地址初始化生成客户端并编译一个实际调用。
+6. 运行类型检查、生产构建、`--check`，并观察至少一个真实或 mock 请求。
 
 生成客户端以后，业务代码只使用生成结果，例如：
 
