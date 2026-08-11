@@ -41,6 +41,7 @@ interface PublishArgs {
   tag: string;
   otp: string;
   fromPackage: string;
+  authCheck: boolean;
   dryRun: boolean;
   confirm: boolean;
   help: boolean;
@@ -58,6 +59,7 @@ function parseArgs(argv: string[]): PublishArgs {
     tag: "",
     otp: "",
     fromPackage: "",
+    authCheck: false,
     dryRun: true,
     confirm: false,
     help: false,
@@ -70,6 +72,7 @@ function parseArgs(argv: string[]): PublishArgs {
     else if (arg === "--tag") out.tag = argv[++i] ?? "";
     else if (arg === "--otp") out.otp = argv[++i] ?? "";
     else if (arg === "--from") out.fromPackage = argv[++i] ?? "";
+    else if (arg === "--auth-check") out.authCheck = true;
     else if (arg === "--dry-run") out.dryRun = true;
     else if (arg === "--confirm") {
       out.confirm = true;
@@ -92,6 +95,7 @@ function printHelp(): void {
       "  --tag <tag>                  npm dist-tag. Default: prerelease id or latest",
       "  --otp <code>                 Numeric code from an authenticator app",
       "  --from <package>             Resume at this package after a partial publish",
+      "  --auth-check                 Check npm authentication, then exit",
       "  --dry-run                    Create and validate temporary tarballs. Default",
       "  --confirm                    Actually publish to the selected registry",
       "  -h, --help                   Show help",
@@ -139,10 +143,19 @@ function resolveTag(explicitTag: string, version: string): string {
   return prerelease ?? "latest";
 }
 
+function childEnvironment(command: string): NodeJS.ProcessEnv {
+  const environment = { ...process.env };
+  if (command === "npm") {
+    delete environment.npm_config_store_dir;
+    delete environment.NPM_CONFIG_STORE_DIR;
+  }
+  return environment;
+}
+
 function run(command: string, args: string[]): void {
   const result = spawnSync(command, args, {
     stdio: "inherit",
-    env: process.env,
+    env: childEnvironment(command),
   });
   if (result.error) throw result.error;
   if (result.status !== 0) {
@@ -153,7 +166,7 @@ function run(command: string, args: string[]): void {
 function capture(command: string, args: string[]): string {
   const result = spawnSync(command, args, {
     encoding: "utf8",
-    env: process.env,
+    env: childEnvironment(command),
   });
   if (result.error) throw result.error;
   if (result.status !== 0) {
@@ -162,6 +175,51 @@ function capture(command: string, args: string[]): string {
     );
   }
   return result.stdout;
+}
+
+function verifyNpmAuth(registry: string): void {
+  const username = capture("npm", ["whoami", "--registry", registry]).trim();
+  if (!username) throw new Error(`npm whoami returned an empty username for ${registry}`);
+  console.log(`npm user: ${username}`);
+}
+
+function verifyPublishedPackage(
+  packageName: (typeof PACKAGE_ORDER)[number],
+  version: string,
+  tag: string,
+  registry: string,
+): void {
+  const publishedVersion = JSON.parse(
+    capture("npm", [
+      "view",
+      `${packageName}@${version}`,
+      "version",
+      "--json",
+      "--registry",
+      registry,
+    ]),
+  ) as unknown;
+  if (publishedVersion !== version) {
+    throw new Error(
+      `Published version verification failed for ${packageName}: expected ${version}, received ${String(publishedVersion)}`,
+    );
+  }
+
+  const distTags = JSON.parse(
+    capture("npm", ["view", packageName, "dist-tags", "--json", "--registry", registry]),
+  ) as unknown;
+  if (
+    typeof distTags !== "object" ||
+    distTags === null ||
+    !(tag in distTags) ||
+    (distTags as Record<string, unknown>)[tag] !== version
+  ) {
+    throw new Error(
+      `Dist-tag verification failed for ${packageName}: expected ${tag} -> ${version}`,
+    );
+  }
+
+  console.log(`verified: ${packageName}@${version} (${tag})`);
 }
 
 function validateTarball(archivePath: string): void {
@@ -210,9 +268,17 @@ function main(): void {
   const registry = resolveRegistry(args);
   const version = readReleaseVersion();
   const tag = resolveTag(args.tag, version);
+  if (args.authCheck && args.target !== "npm") {
+    throw new Error("--auth-check requires --target npm");
+  }
   if (!args.dryRun && !args.confirm) {
     throw new Error("Real publish requires --confirm");
   }
+
+  if (args.target === "npm" && (args.authCheck || !args.dryRun)) {
+    verifyNpmAuth(registry);
+  }
+  if (args.authCheck) return;
 
   console.log(`xapiforge publish target: ${args.target}`);
   console.log(`registry: ${registry}`);
@@ -263,6 +329,7 @@ function main(): void {
     if (args.otp) publishArgs.push("--otp", args.otp);
 
     run("pnpm", publishArgs);
+    verifyPublishedPackage(pkg, version, tag, registry);
   }
 
   if (args.dryRun) {

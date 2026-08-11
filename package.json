@@ -19,7 +19,7 @@
     "codegen",
     "fetch"
   ],
-  "packageManager": "pnpm@9.0.0",
+  "packageManager": "pnpm@9.15.9",
   "scripts": {
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
@@ -35,11 +35,12 @@
     "test:genapi": "pnpm --filter '@xapiforge/genapi' test",
     "test:demo-app": "python3 scripts/test/demo-app-scenarios.py",
     "test:download": "tsx scripts/test/download-native.ts",
-    "verify": "pnpm build && pnpm typecheck && npx tsc --noEmit && pnpm format:check && pnpm lint && pnpm test && pnpm test:scenarios && pnpm test:download && pnpm docs:build",
+    "verify": "pnpm build && pnpm typecheck && pnpm exec tsc --noEmit && pnpm format:check && pnpm lint && pnpm test && pnpm test:scenarios && pnpm test:download && pnpm docs:build",
     "publish:check": "pnpm verify",
     "publish:dry-run": "pnpm publish:check && tsx scripts/publish-packages.ts --target npm --dry-run",
     "publish:local": "pnpm publish:check && tsx scripts/publish-packages.ts --target local --confirm",
-    "publish:npm": "pnpm publish:check && tsx scripts/publish-packages.ts --target npm --confirm",
+    "publish:npm:auth-check": "tsx scripts/publish-packages.ts --target npm --auth-check",
+    "publish:npm": "pnpm publish:npm:auth-check && pnpm publish:check && tsx scripts/publish-packages.ts --target npm --confirm",
     "release:version": "tsx scripts/set-version.ts",
     "docs:dev": "vitepress dev docs --port 5174",
     "docs:build": "vitepress build docs",

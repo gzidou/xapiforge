@@ -139,13 +139,7 @@ git push origin main
 
 ### 6. 确认 npm 登录状态
 
-显式使用公共 registry，避免本机镜像配置干扰：
-
-```bash
-npm whoami --registry https://registry.npmjs.org/
-```
-
-如果未登录：
+`pnpm publish:npm` 会先向公共 npm registry 检查登录状态，不受本机安装依赖时使用的镜像配置影响。如果检查失败，再登录公共 npm：
 
 ```bash
 npm login --registry https://registry.npmjs.org/
@@ -163,33 +157,22 @@ npm 目前要求发布账号启用 2FA，或使用允许发布的受限凭据。
 pnpm publish:npm
 ```
 
-脚本会重新运行 `pnpm verify`，然后逐包发布。稳定版本默认使用 `latest`；`0.2.0-alpha.0` 之类的预发布版本默认使用 `alpha`。看到 npm 的安全密钥或浏览器确认提示时，按当前账号的 2FA 方式完成验证。
+这是正常发布唯一需要记住的命令。脚本会按以下顺序自动完成：
+
+1. 使用 `https://registry.npmjs.org/` 检查 npm 登录状态；
+2. 运行 `pnpm verify`；
+3. 逐包发布；
+4. 从公共 npm 逐包确认精确版本和 dist-tag。
+
+稳定版本默认使用 `latest`；`0.2.0-alpha.0` 之类的预发布版本默认使用 `alpha`。看到 npm 的安全密钥或浏览器确认提示时，按当前账号的 2FA 方式完成验证。
 
 发布预发布版本后，普通的 `npm install @xapiforge/core` 仍解析 `latest`；只有显式安装 `@xapiforge/core@alpha` 或精确预发布版本的使用者会获得 alpha。
 
 ### 8. 验证线上包
 
-不要只看命令最后显示成功。逐包确认精确版本：
-
-```bash
-npm view @xapiforge/core@0.1.5 version --registry https://registry.npmjs.org/
-npm view @xapiforge/genapi@0.1.5 version --registry https://registry.npmjs.org/
-npm view @xapiforge/adapter-browser@0.1.5 version --registry https://registry.npmjs.org/
-npm view @xapiforge/adapter-capacitor@0.1.5 version --registry https://registry.npmjs.org/
-npm view @xapiforge/adapter-react-native@0.1.5 version --registry https://registry.npmjs.org/
-npm view @xapiforge/vconsole-debug@0.1.5 version --registry https://registry.npmjs.org/
-```
+`pnpm publish:npm` 已自动逐包确认精确版本和 dist-tag；任一结果不符合预期都会以非零状态退出。日志中的 `verified: <包名>@<版本> (<tag>)` 表示该包的线上结果已确认。
 
 再在新的临时项目中从公共 npm 安装 core、一个 adapter 和 genapi，执行一次生成和 TypeScript 构建。这样才能发现 registry 包内容与 monorepo 源码运行方式不同的问题。
-
-预发布还应确认 dist-tag 没有污染稳定版本：
-
-```bash
-npm view @xapiforge/core dist-tags --registry https://registry.npmjs.org/
-npm view @xapiforge/genapi dist-tags --registry https://registry.npmjs.org/
-```
-
-预期 `latest` 仍指向最近的稳定版本，`alpha` 指向本次 alpha 版本。
 
 ### 9. 打 Git tag
 
