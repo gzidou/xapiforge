@@ -9,6 +9,8 @@ xapiforge 根据 OpenAPI 文档生成 TypeScript 客户端，并统一处理鉴�
 
 完整文档：[https://gzidou.github.io/xapiforge/](https://gzidou.github.io/xapiforge/)
 
+预发布版本使用独立的 npm dist-tag，不会移动 `latest`。具体版本状态、安装方式和破坏性变更见[版本记录](./CHANGELOG.md)与对应迁移指南；相关包应使用同一发布通道，避免混装不兼容版本。
+
 ## 先选需要的包
 
 | 包                                | 什么时候使用                                                      |
@@ -49,7 +51,7 @@ export default defineConfig({
         {
           name: "base",
           displayName: "Base API",
-          source: { url: "http://localhost:7001/swagger/v1/swagger.json" }
+          source: { url: "http://localhost:8080/swagger/v1/swagger.json" }
         }
       ]
     }
@@ -76,6 +78,24 @@ pnpm download-swagger
 pnpm generate:api myapp
 pnpm check:api
 ```
+
+默认生成到 `src/api/gen/myapp/`：`index.ts` 是客户端工厂，`api-types.ts` 是跨 service 类型入口，`types/` 保存各 service 的 OpenAPI path/schema 类型，`manifest.json` 用于确定性漂移检查。
+
+`source.file|url` 只决定生成阶段读取哪份 OpenAPI，不决定页面请求地址。创建 `AuthService` 后，从生成目录初始化客户端，并单独传入运行时 `baseURL`：
+
+```typescript
+import { createMyappClient } from "./api/gen/myapp/index.js";
+
+const api = createMyappClient({
+  baseURL: "https://api.example.com",
+  authService
+});
+
+// base 来自 services[].name；GET/POST 的 path、params、body 和 data 由该 OpenAPI 约束。
+const baseApi = api.base;
+```
+
+service ID 是稳定身份。kebab-case ID 会映射成安全的客户端属性，例如 `legacy-orders` 对应配置/runtime override key `"legacy-orders"`、类型文件 `types/legacy-orders.ts`、客户端属性 `api.legacy_orders` 和类型 namespace `LegacyOrdersSchemas`。默认类型入口按 service 隔离；需要精确 schema identity 时使用 `SchemaOf<Service, FullName>`。
 
 下一步按[浏览器应用接入](https://gzidou.github.io/xapiforge/getting-started/browser)创建 `AuthService` 并初始化生成的客户端。Capacitor 和 React Native 项目先看[接入方式选择](https://gzidou.github.io/xapiforge/getting-started/)；它们的代码生成步骤相同，只是网络和 TokenStore 适配方式不同。
 
