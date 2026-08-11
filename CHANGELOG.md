@@ -4,6 +4,10 @@ All notable changes to xapiforge are documented here.
 
 ## Unreleased
 
+## 0.2.0-alpha.0 - 2026-08-10
+
+This alpha contains the breaking genapi v2 contract and is published under the `alpha` dist-tag. Existing users remain on the `0.1.x` `latest` line unless they explicitly opt into the prerelease.
+
 - Added the breaking genapi v2 contract: required `services[].source.file|url`, canonical `SchemasByService`/`SchemaOf`, and the explicit `service-namespace`, `flat-strict`, and `canonical-only` export strategies with strict collision diagnostics.
 - Added deterministic manifests, read-only `--check`, generation locking, transactional project replacement, stale-file cleanup, and interrupted-transaction recovery.
 - Added strict unknown-field and semantic internal `$ref` validation, JSON-safe canonicalization, and a deeply frozen normalized document with a mutation-safe/literal-ref-safe view for `openapi-typescript`.

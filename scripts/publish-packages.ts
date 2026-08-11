@@ -10,7 +10,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -25,6 +25,15 @@ const PACKAGE_ORDER = [
   "@xapiforge/adapter-react-native",
   "@xapiforge/vconsole-debug",
 ] as const;
+
+const PACKAGE_MANIFESTS: Readonly<Record<(typeof PACKAGE_ORDER)[number], string>> = {
+  "@xapiforge/core": "packages/core/package.json",
+  "@xapiforge/genapi": "packages/genapi/package.json",
+  "@xapiforge/adapter-browser": "packages/adapter-browser/package.json",
+  "@xapiforge/adapter-capacitor": "packages/adapter-capacitor/package.json",
+  "@xapiforge/adapter-react-native": "packages/adapter-react-native/package.json",
+  "@xapiforge/vconsole-debug": "packages/vconsole-debug/package.json",
+};
 
 interface PublishArgs {
   target: "local" | "npm" | "custom";
@@ -46,7 +55,7 @@ function parseArgs(argv: string[]): PublishArgs {
   const out: PublishArgs = {
     target: "local",
     registry: "",
-    tag: "latest",
+    tag: "",
     otp: "",
     fromPackage: "",
     dryRun: true,
@@ -80,7 +89,7 @@ function printHelp(): void {
       "Options:",
       "  --target <local|npm|custom>  Select registry target. Default: local",
       "  --registry <url>             Registry URL for custom target",
-      "  --tag <tag>                  npm dist-tag. Default: latest",
+      "  --tag <tag>                  npm dist-tag. Default: prerelease id or latest",
       "  --otp <code>                 Numeric code from an authenticator app",
       "  --from <package>             Resume at this package after a partial publish",
       "  --dry-run                    Create and validate temporary tarballs. Default",
@@ -102,6 +111,32 @@ function resolveRegistry(args: PublishArgs): string {
     throw new Error("--target custom requires --registry <url>");
   }
   return args.registry;
+}
+
+function readReleaseVersion(): string {
+  const versions = PACKAGE_ORDER.map((name) => {
+    const manifest = JSON.parse(readFileSync(PACKAGE_MANIFESTS[name], "utf8")) as {
+      name?: string;
+      version?: string;
+    };
+    if (manifest.name !== name || !manifest.version) {
+      throw new Error(`Invalid package manifest: ${PACKAGE_MANIFESTS[name]}`);
+    }
+    return { name, version: manifest.version };
+  });
+  const uniqueVersions = new Set(versions.map(({ version }) => version));
+  if (uniqueVersions.size !== 1) {
+    throw new Error(
+      `Public package versions must match:\n${versions.map(({ name, version }) => `  ${name}: ${version}`).join("\n")}`,
+    );
+  }
+  return versions[0]!.version;
+}
+
+function resolveTag(explicitTag: string, version: string): string {
+  if (explicitTag) return explicitTag;
+  const prerelease = /^\d+\.\d+\.\d+-([0-9A-Za-z-]+)(?:\.|$)/.exec(version)?.[1];
+  return prerelease ?? "latest";
 }
 
 function run(command: string, args: string[]): void {
@@ -173,13 +208,16 @@ function main(): void {
   }
 
   const registry = resolveRegistry(args);
+  const version = readReleaseVersion();
+  const tag = resolveTag(args.tag, version);
   if (!args.dryRun && !args.confirm) {
     throw new Error("Real publish requires --confirm");
   }
 
   console.log(`xapiforge publish target: ${args.target}`);
   console.log(`registry: ${registry}`);
-  console.log(`tag: ${args.tag}`);
+  console.log(`version: ${version}`);
+  console.log(`tag: ${tag}`);
   console.log(`mode: ${args.dryRun ? "dry-run" : "publish"}`);
   console.log("");
 
@@ -219,7 +257,7 @@ function main(): void {
       "--access",
       "public",
       "--tag",
-      args.tag,
+      tag,
       "--no-git-checks",
     ];
     if (args.otp) publishArgs.push("--otp", args.otp);

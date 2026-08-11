@@ -51,6 +51,7 @@ git pull --ff-only
 - 修复兼容问题：patch，例如 `0.1.4` → `0.1.5`。
 - 增加向后兼容能力：minor，例如 `0.1.4` → `0.2.0`。
 - 有破坏性修改：major；项目仍处于 `0.x` 时，也必须在 CHANGELOG 明确写出迁移方式。
+- 尚未稳定、需要限制默认安装人群：使用预发布版本，例如 `0.2.0-alpha.0`。发布脚本会从预发布标识自动选择 `alpha` dist-tag，不会移动 `latest`。
 
 统一修改根包和六个公开包：
 
@@ -59,6 +60,15 @@ pnpm release:version 0.1.5
 ```
 
 版本号只是示例。随后编辑 `CHANGELOG.md`，写清使用者能感知的变化、修复和兼容性影响。
+
+预发布版本发布前必须确认 dry-run 头部同时显示预期版本与 tag，例如：
+
+```text
+version: 0.2.0-alpha.0
+tag: alpha
+```
+
+如需覆盖自动选择结果，可直接调用发布脚本并显式传 `--tag`；不要给 alpha/beta/rc 版本使用 `latest`。
 
 ### 3. 跑完整门禁
 
@@ -153,7 +163,9 @@ npm 目前要求发布账号启用 2FA，或使用允许发布的受限凭据。
 pnpm publish:npm
 ```
 
-脚本会重新运行 `pnpm verify`，然后逐包发布。看到 npm 的安全密钥或浏览器确认提示时，按当前账号的 2FA 方式完成验证。
+脚本会重新运行 `pnpm verify`，然后逐包发布。稳定版本默认使用 `latest`；`0.2.0-alpha.0` 之类的预发布版本默认使用 `alpha`。看到 npm 的安全密钥或浏览器确认提示时，按当前账号的 2FA 方式完成验证。
+
+发布预发布版本后，普通的 `npm install @xapiforge/core` 仍解析 `latest`；只有显式安装 `@xapiforge/core@alpha` 或精确预发布版本的使用者会获得 alpha。
 
 ### 8. 验证线上包
 
@@ -169,6 +181,15 @@ npm view @xapiforge/vconsole-debug@0.1.5 version --registry https://registry.npm
 ```
 
 再在新的临时项目中从公共 npm 安装 core、一个 adapter 和 genapi，执行一次生成和 TypeScript 构建。这样才能发现 registry 包内容与 monorepo 源码运行方式不同的问题。
+
+预发布还应确认 dist-tag 没有污染稳定版本：
+
+```bash
+npm view @xapiforge/core dist-tags --registry https://registry.npmjs.org/
+npm view @xapiforge/genapi dist-tags --registry https://registry.npmjs.org/
+```
+
+预期 `latest` 仍指向最近的稳定版本，`alpha` 指向本次 alpha 版本。
 
 ### 9. 打 Git tag
 

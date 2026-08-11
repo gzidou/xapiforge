@@ -1,6 +1,6 @@
 {
   "name": "@xapiforge/adapter-capacitor",
-  "version": "0.1.4",
+  "version": "0.2.0-alpha.0",
   "private": false,
   "description": "Capacitor token storage and native file downloads for xapiforge",
   "type": "module",

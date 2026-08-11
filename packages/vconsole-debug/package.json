@@ -1,6 +1,6 @@
 {
   "name": "@xapiforge/vconsole-debug",
-  "version": "0.1.4",
+  "version": "0.2.0-alpha.0",
   "private": false,
   "description": "Framework-agnostic vConsole diagnostics with masked Storage snapshots and debug actions",
   "type": "module",

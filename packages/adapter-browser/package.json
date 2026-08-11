@@ -1,6 +1,6 @@
 {
   "name": "@xapiforge/adapter-browser",
-  "version": "0.1.4",
+  "version": "0.2.0-alpha.0",
   "private": false,
   "description": "Browser TokenStore adapters backed by localStorage, sessionStorage, or cookies",
   "type": "module",
