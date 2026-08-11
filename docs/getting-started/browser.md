@@ -49,7 +49,7 @@ export default defineConfig({
         {
           name: "base",
           displayName: "Base API",
-          source: { url: "http://localhost:7001/swagger/v1/swagger.json" }
+          source: { url: "http://localhost:8080/swagger/v1/swagger.json" }
         }
       ]
     }
@@ -131,7 +131,7 @@ import { AuthService } from "@xapiforge/core";
 import { localStorageStore } from "@xapiforge/adapter-browser";
 import { createMyappClient } from "./api/gen/myapp/index.js";
 
-const BASE_URL = "http://localhost:7001";
+const BASE_URL = "http://localhost:8080";
 
 const authService = new AuthService({
   tokenStore: localStorageStore("myapp_access_token"),
@@ -197,7 +197,7 @@ onMounted(async () => {
 ```typescript
 import { HttpClient } from "@xapiforge/core";
 
-const http = new HttpClient({ baseURL: "http://localhost:7001" });
+const http = new HttpClient({ baseURL: "http://localhost:8080" });
 
 interface TokenResponse {
   access_token: string;

@@ -45,3 +45,5 @@ tmp/
 # VitePress 构建产物
 docs/.vitepress/cache/
 docs/.vitepress/dist/
+
+.DS_Store
