@@ -83,8 +83,16 @@ function parseArgs(argv) {
 
 // ---------- 通用工具 ----------
 
+/** --dry 中途失败时要执行的还原动作（改过版本号之后才设置）；正式发布不设，失败就保留现场、下次复用版本号重跑。 */
+let cleanupOnFailure = null;
+
+/** 打印错误并退出；所有「停下来」都走这里，保证退出码是 1，演练时顺手把改过的文件还原。 */
 function fail(message) {
   console.error(`\n❌ ${message}`);
+  if (cleanupOnFailure) {
+    cleanupOnFailure();
+    console.error("（演练中失败，已还原改过的文件）");
+  }
   process.exit(1);
 }
 
@@ -294,6 +302,8 @@ function writeChangelog(version, since) {
       ? existing.slice(0, at) + "\n" + section + existing.slice(at)
       : existing + "\n" + section;
   writeFileSync(path, updated.replace(/\n{3,}/g, "\n\n"));
+  // 生成的 Markdown 要过 pnpm verify 里的 format:check
+  run("pnpm", ["exec", "prettier", "--write", "--log-level", "warn", "CHANGELOG.md"]);
   return section;
 }
 
@@ -365,6 +375,7 @@ function main() {
   console.log(`目标版本 ${target}（${reason}）`);
 
   const snapshot = snapshotManagedFiles();
+  if (options.dry) cleanupOnFailure = () => restoreManagedFiles(snapshot);
   step(`3/6 改版本号 → ${target}`);
   run("pnpm", ["release:version", target]);
 
@@ -385,6 +396,7 @@ function main() {
   ]);
 
   if (options.dry) {
+    cleanupOnFailure = null;
     restoreManagedFiles(snapshot);
     console.log(
       `\n✅ 演练通过：${localVersion} → ${target} 可以发布。受管文件已还原，正式发布去掉 --dry 再跑一次。`,
