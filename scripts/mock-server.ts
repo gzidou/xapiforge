@@ -7,6 +7,7 @@
  *   pnpm mock          # 启动后台
  *   pnpm mock:stop     # 关
  *   cat /tmp/demo-mock.pid
+ *   MOCK_PORT=18787 pnpm mock   # 换端口（默认 8787）
  *
  * 数据格式严格按 Demo ABP 风格：{ code: 0, data: ..., message: null }。
  * v0.2：envelope 解包由业务侧 middleware（createAbpUnwrapMw）处理，mock 只管返 JSON。
@@ -35,7 +36,13 @@ import { writeFileSync } from "node:fs";
 import { unlink } from "node:fs/promises";
 import { Buffer } from "node:buffer";
 
-const PORT = 8787;
+/**
+ * 监听端口：环境变量 MOCK_PORT，默认 8787（demo-app 写死连 8787，手动 `pnpm mock` 保持默认即可）。
+ * 为什么可配（2026-10-27）：维护者本机常驻的另一个服务（热更新服务端）也占 8787，
+ * `pnpm test:scenarios` 起不来 mock，`pnpm verify` / `pnpm release` 因此失败。场景测试发现 8787 被占用时
+ * 会挑一个空闲端口、通过 MOCK_PORT 传进来。
+ */
+const PORT = Number(process.env.MOCK_PORT ?? 8787);
 const PID_FILE = "/tmp/demo-mock.pid";
 
 // ---------- in-memory store ----------

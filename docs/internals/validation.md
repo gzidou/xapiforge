@@ -217,7 +217,7 @@ pnpm test:demo-app
 ## 常见问题
 
 **Q: `pnpm test:scenarios` 报端口占用？**
-A: 脚本会先探测 8787 是否可用；已运行的 mock 会复用。若 pidfile 残留但进程已死，删 `/tmp/demo-mock.pid` 重试。
+A: 8787 上已运行的 mock 会复用；否则脚本向系统要一个空闲端口拉起 mock（`MOCK_PORT` 环境变量），8787 被别的程序占着也不影响。显式设置 `MOCK_PORT` 时只用该端口。若 pidfile 残留但进程已死，删 `/tmp/demo-mock.pid` 重试。
 
 **Q: 改了库代码后 L1 通过但 L2 失败？**
 A: L2 走真实浏览器 + demo-app，可能是 demo-app 业务侧代码（如 `abp-unwrap-mw.ts`）的问题，不是库的问题。看浏览器 DevTools 的 Network / Console 定位。

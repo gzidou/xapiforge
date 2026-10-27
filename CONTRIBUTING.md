@@ -42,8 +42,10 @@ Husky runs `lint:fix + format` on staged files automatically. Build verification
 
 ```bash
 pnpm test:scenarios    # library-level scenario tests
-pnpm mock              # start mock-server (port 8787)
+pnpm mock              # start mock-server (port 8787; override with MOCK_PORT)
 ```
+
+`pnpm test:scenarios` reuses a mock already running on 8787; otherwise it starts its own on a free port, so another local service holding 8787 does not break `pnpm verify`.
 
 For browser-level regression checks, run `pnpm mock`, start `examples/demo-app`, then run `pnpm test:demo-app` or open `/scenarios` and click "Run All". The automated command requires Python Playwright and Chromium; see the [validation guide](./docs/internals/validation.md) for setup.
 

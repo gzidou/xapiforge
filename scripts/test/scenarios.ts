@@ -9,9 +9,13 @@
  *
  * 手动运行：pnpm tsx scripts/test-scenarios.ts
  *   → 若 mock-server 未启动，会自动拉起子进程；跑完自动 kill
+ *
+ * 端口：8787 上已有 mock 就复用；否则（没起，或 8787 被别的程序占着）向系统要一个空闲端口，
+ * 用 MOCK_PORT 环境变量拉起 mock，BASE 随之改过去。显式给 MOCK_PORT 时只用那个端口。
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { createServer } from "node:net";
 import {
   HttpClient,
   AuthService,
@@ -26,7 +30,10 @@ import {
 } from "@xapiforge/core";
 import type { TokenStore, AuthRefresher, Middleware } from "@xapiforge/core";
 
-const BASE = "http://localhost:8787";
+/** mock 默认端口，与 scripts/mock-server.ts 一致；显式设置 MOCK_PORT 时以它为准。 */
+const DEFAULT_MOCK_PORT = Number(process.env.MOCK_PORT ?? 8787);
+/** 各测试用的基础地址。main() 里若在别的端口拉起 mock 会改写它，所以是 let；所有用到它的地方都在函数体内、main() 之后才执行。 */
+let BASE = `http://localhost:${DEFAULT_MOCK_PORT}`;
 const MOCK_PID_FILE = "/tmp/demo-mock.pid";
 
 // ─── 简易断言工具 ───
@@ -1568,11 +1575,28 @@ async function isMockRunning(): Promise<boolean> {
   }
 }
 
-/** 拉起 mock-server 子进程，返回 childProcess；失败返 null */
-function spawnMockServer(): ChildProcess | null {
-  console.log("[test] mock-server 未运行，自动拉起子进程...");
+/**
+ * 向系统要一个当前空闲的 TCP 端口：监听 0 号端口让内核分配，读出端口号后立即关闭。
+ * 关闭到 mock 重新监听之间有极短的窗口可能被别人抢走，测试场景下可以接受（抢走了 waitForMockReady 会超时报错）。
+ */
+function findFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      server.close(() => (port ? resolve(port) : reject(new Error("拿不到空闲端口"))));
+    });
+  });
+}
+
+/** 拉起 mock-server 子进程（监听 port），返回 childProcess；失败返 null */
+function spawnMockServer(port: number): ChildProcess | null {
+  console.log(`[test] mock-server 未运行，自动拉起子进程（端口 ${port}）...`);
   const child = spawn("pnpm", ["mock"], {
     cwd: process.cwd(),
+    env: { ...process.env, MOCK_PORT: String(port) },
     stdio: "ignore",
     detached: false,
     shell: false,
@@ -1611,7 +1635,12 @@ async function main(): Promise<void> {
   if (await isMockRunning()) {
     console.log("[test] mock-server 已运行（复用）");
   } else {
-    mockChild = spawnMockServer();
+    // 没显式指定端口时总是换一个空闲端口：8787 可能被别的服务占着（健康检查不通不代表端口空闲），
+    // 在默认端口上硬起会 EADDRINUSE，表现为「5s 内未就绪」。
+    const port = process.env.MOCK_PORT ? DEFAULT_MOCK_PORT : await findFreePort();
+    BASE = `http://localhost:${port}`;
+    console.log(`target: ${BASE}`);
+    mockChild = spawnMockServer(port);
     if (!mockChild) {
       console.error("\n❌ 无法启动 mock-server。请手动跑 `pnpm mock` 后再试。");
       process.exit(1);
