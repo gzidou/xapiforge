@@ -109,6 +109,14 @@ For stub/placeholder code hitting `no-unsafe-*` errors, use type annotations or 
 
 **Upgrade path**: Wait for `typescript-eslint` to support TS 7, then upgrade TS 7 + Node ESM in one shot. Don't do piecemeal upgrades.
 
+## 查代码用 LSP（Claude Code）
+
+2026-10-27 定：查代码用 LSP，不引入 codegraph。用户级已启用 Claude Code 的 `typescript-lsp` / `swift-lsp` / `kotlin-lsp` 插件，语言服务器都在 PATH 上，仓内不用配置。
+
+- 改函数签名、导出之前，先用 `findReferences` / `incomingCalls` 查调用方，不只靠 grep（grep 会混进注释和字符串里的同名词）；`goToDefinition` / `hover` 查类型。
+- **刚启动时服务器还在加载工程，首次查询可能只返回定义本身**——结果只有 1 处时再查一次，不要据此判断「没人用」。
+- 覆盖：全部 TS，全覆盖。
+
 ## Common Pitfalls
 
 | Symptom                                            | Cause / Fix                                                                                                |
