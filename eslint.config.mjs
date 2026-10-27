@@ -23,6 +23,7 @@ export default tseslint.config(
       "**/*.js",
       "examples/*/vite.config.ts", // vite dev config — Vite runs it as ESM, ESLint TS parser chokes
       "scripts/test/**", // 测试脚本：import workspace 包，projectService 找不到对应 tsconfig；由 tsx 直接跑覆盖
+      "scripts/release.mjs", // 发布脚本：纯 Node ESM，不在任何 tsconfig 里，projectService 解析不了；node --check + --dry 演练覆盖
       "docs/.vitepress/**", // VitePress 配置 + 构建产物
     ],
   },

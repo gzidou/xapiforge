@@ -41,6 +41,7 @@
     "publish:local": "pnpm publish:check && tsx scripts/publish-packages.ts --target local --confirm",
     "publish:npm:auth-check": "tsx scripts/publish-packages.ts --target npm --auth-check",
     "publish:npm": "pnpm publish:npm:auth-check && pnpm publish:check && tsx scripts/publish-packages.ts --target npm --confirm",
+    "release": "node scripts/release.mjs",
     "release:version": "tsx scripts/set-version.ts",
     "docs:dev": "vitepress dev docs --port 5174",
     "docs:build": "vitepress build docs",
