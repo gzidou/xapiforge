@@ -411,7 +411,7 @@ function main() {
   console.log(
     `\n✅ 已发布 xapiforge ${target} 到本机私服，提交并打 tag v${target}（未 push，远程由你决定）。`,
   );
-  console.log("下一步：接入工程 `pnpm upgrade xapiforge` 升级。");
+  console.log("下一步：接入工程 `pnpm deps:upgrade xapiforge` 升级。");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();
