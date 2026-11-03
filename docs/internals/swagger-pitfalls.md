@@ -6,19 +6,20 @@ xapiforge 内核处理规范、自包含的 OpenAPI 3.x。只有已经通过实�
 
 ## 先按层分类
 
-| 现象                                                         | 风险                                | 正确处理                                             |
-| ------------------------------------------------------------ | ----------------------------------- | ---------------------------------------------------- |
-| OpenAPI 2、非法对象、无法解析或外部 `$ref`                   | 无法确定生成输入                    | 修复/预处理为自包含 OpenAPI 3.x                      |
-| enum 值类型与 schema type 不一致                             | 生成类型与真实值可能相反            | 对照真实 JSON，service `preprocessSwagger` 整体转换  |
-| enum 只有数字、没有成员名                                    | 类型正确但页面只能写魔法数字        | 用经过审核的业务映射补 `x-enum-varnames/labels`      |
-| `nullable: true`、`date-time`、`additionalProperties: false` | 通常是合法 OpenAPI 3.0 语义         | 先保留并检查生成类型，不要为了“看起来复杂”改写       |
-| 框架内部 path/component                                      | 补全噪声或暴露不应调用的 API        | 优先让后端生成业务文档；否则精确过滤 path 并验证引用 |
-| `additionalProperties: {}` 与实际任意对象不符                | 可能生成过严字典                    | 确认运行时后改为 `additionalProperties: true`        |
-| `int64` 实际以 JSON number 发送                              | 超过 53 位后运行时已丢精度          | 后端改为字符串序列化并同步 OpenAPI                   |
-| 跨 service 同名 schema                                       | 不是错误                            | 保持独立 service namespace，不合并 Swagger           |
-| 缺少 `operationId` 或 tags                                   | 可读性较差，但 path/method 仍可生成 | 可推动后端改善；通常不需要 hook                      |
-| 业务 `{ code, data }` envelope                               | 运行时响应协议                      | middleware，不是生成 hook                            |
-| CORS、证书、代理或主机错误                                   | 运行环境问题                        | 网络层、代理或 client `baseURL`                      |
+| 现象                                                           | 风险                                | 正确处理                                                           |
+| -------------------------------------------------------------- | ----------------------------------- | ------------------------------------------------------------------ |
+| OpenAPI 2、非法对象、无法解析或外部 `$ref`                     | 无法确定生成输入                    | 修复/预处理为自包含 OpenAPI 3.x                                    |
+| enum 值类型与 schema type 不一致                               | 生成类型与真实值可能相反            | 对照真实 JSON，service `preprocessSwagger` 整体转换                |
+| enum 只有数字、没有成员名                                      | 类型正确但页面只能写魔法数字        | 用经过审核的业务映射补 `x-enum-varnames/labels`                    |
+| `nullable: true`、`date-time`、`additionalProperties: false`   | 通常是合法 OpenAPI 3.0 语义         | 先保留并检查生成类型，不要为了“看起来复杂”改写                     |
+| 框架内部 path/component                                        | 补全噪声或暴露不应调用的 API        | 优先让后端生成业务文档；否则精确过滤 path 并验证引用               |
+| `additionalProperties: {}` 与实际任意对象不符                  | 可能生成过严字典                    | 确认运行时后改为 `additionalProperties: true`                      |
+| `int64` 实际以 JSON number 发送                                | 超过 53 位后运行时已丢精度          | 后端改为字符串序列化并同步 OpenAPI                                 |
+| 跨 service 同名 schema                                         | 不是错误                            | 保持独立 service namespace，不合并 Swagger                         |
+| 缺少 `operationId` 或 tags                                     | 可读性较差，但 path/method 仍可生成 | 可推动后端改善；通常不需要 hook                                    |
+| 业务 `{ code, data }` envelope                                 | 运行时响应协议                      | middleware，不是生成 hook                                          |
+| knife4j 按分组拆成多份 `api-docs`；schema 名含中文 / `«»` 泛型 | 生成能过，但便利类型导出被静默丢弃  | 见下文「knife4j 多分组与非 ASCII schema 名」；接口少时手写接口函数 |
+| CORS、证书、代理或主机错误                                     | 运行环境问题                        | 网络层、代理或 client `baseURL`                                    |
 
 ## legacy integer enum
 
@@ -211,3 +212,16 @@ root、project、service hook 使用整对象覆盖，优先级为 `service > pr
 10. 至少观察一个真实或 mock 请求，确认运行时响应与生成类型一致。
 
 不要在 hook 中写真实域名、凭据、当前时间、随机值或未锁定远程依赖。详细 API 见[genapi Hooks](../guides/genapi-hooks.md)和[枚举生成](../guides/enums.md)。
+
+## knife4j 多分组与非 ASCII schema 名（已记录，暂不处理）
+
+Spring 项目常用 knife4j 暴露文档。实际拉过一套三个服务的生产文档（2026-11-03），现象有两类：
+
+1. **按业务组拆成多份文档**。`/<服务>/swagger-resources` 列出分组，每组一个 `/v3/api-docs?group=<组名>`（组名是中文，URL 要编码）；不带 `group` 的 `api-docs` 返回空。三个服务分别 13 / 5 / 11 组，其中 8 组为空；同一服务各组的 path 互不重叠，合并就是并集；三个服务还共享同一套「系统模块」等公共组。genapi 现在一个 service 只接一个 `source`，接这类后端要么每组当一个 service（client 碎成十几个），要么先在外面把各组文档合并成一份再用 `source.file`。
+2. **schema 名不是合法 TS 标识符**。1345 个 schema 里绝大多数是中文或 Java 泛型形态：`Page«水资源调度记录列表返回实体»`、`分页响应对象«GenTableColumn»`、`wrp_fl_wl对象`、`Comparator«string»`（Java 内部类型漏进文档）。openapi-typescript 用字符串键 `components["schemas"]["…"]` 承接，path 类型完整、生成能过；但 genapi 的 `safeTypeAlias` 只认 ASCII 标识符，这些名字在 `XxxSchemas` 便利命名空间里被**静默丢弃**（实测 117 个里只导出 65 个），没有任何提示。
+
+处理边界：
+
+- 这两条都在内核「只处理规范、自包含 OpenAPI」的边界之外，不为它们在内核加探测或预置。要做也只做两件通用的事：`safeTypeAlias` 对非法名给出可配置的转写规则（或至少打印丢弃清单），以及一个 service 接受多个 `source` 并按 path 并集合并、重复 schema 同名同形才允许。
+- 现在不做。实测消费者只用其中 7 个接口，为它们承担转写规则、分组合并、公共组去重三套改动不划算；接口少、文档不标准时手写接口函数，接口多且文档标准了再回来生成。
+- 记录依据：旧客户端用到的接口数来自代码 grep，文档统计来自按组实拉；不要凭文档站首页的分组数估算。
