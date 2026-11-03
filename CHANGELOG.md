@@ -4,6 +4,12 @@ All notable changes to xapiforge are documented here.
 
 ## Unreleased
 
+## 0.2.0-alpha.2 - 2026-11-03
+
+### Fixed
+
+- **core**: createEnvelopeMiddleware 按内容判信封，不按 Content-Type (7acaed4)
+
 ## 0.2.0-alpha.1 - 2026-11-03
 
 ### Added
