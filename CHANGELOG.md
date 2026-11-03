@@ -4,6 +4,29 @@ All notable changes to xapiforge are documented here.
 
 ## Unreleased
 
+## 0.2.0-alpha.1 - 2026-11-03
+
+### Added
+
+- **genapi**: X3 根配置 timeoutMs 可省略，默认 15 秒 (6d5b935)
+- **core**: X2 新增 createEnvelopeMiddleware——按字段名配置的官方信封解包中间件 (c67f6b2)
+- **release**: add one-command `pnpm release` following the shared cross-repo convention (--dry / --bump / --set) (a8b1745)
+
+### Fixed
+
+- **release**: format the generated CHANGELOG with prettier so verify passes; restore managed files when a dry run fails (96e829e)
+- harden npm publish workflow (f8d525a)
+
+### Changed
+
+- **scenarios**: start the mock on a free port when 8787 is taken; mock-server reads MOCK_PORT (36611a6)
+
+### Docs
+
+- **genapi**: X4 记录 knife4j 多分组与非 ASCII schema 名的现象与处理边界 (3191810)
+- AGENTS.md 写明查代码用 LSP 的用法与覆盖范围 (9d757cf)
+- align browser examples and ignore macOS metadata (477ad54)
+- update genapi v2 usage guidance (3162882)
 - `@xapiforge/core` 新增 `createEnvelopeMiddleware({ code, data, message, ok })`：可选的官方信封解包 middleware，按显式配置的字段名解出 `{ code, data, msg }` 一族信封里的业务数据，业务失败抛 `ApiError(kind="business")`（带后端文案、业务码和完整信封）。不探测字段名、不内置任何后端预置，「HTTP 200 + 鉴权码」的会话处理留给调用方。2xx JSON 但不是信封的响应立即以 `ApiError(kind="parse")` 失败。
 - `@xapiforge/genapi` 根配置的 `timeoutMs` 改为可省略，默认 15 秒（`DEFAULT_SWAGGER_TIMEOUT_MS`）；写了仍按原规则校验。
 - `docs/internals/swagger-pitfalls.md` 记录 knife4j（Spring）文档的两类问题与处理边界：按组拆成多份 `api-docs`、非 ASCII / Java 泛型 schema 名在 `XxxSchemas` 便利导出里被静默丢弃；暂不处理，接口少时手写。
