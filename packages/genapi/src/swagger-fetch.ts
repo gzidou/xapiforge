@@ -10,6 +10,8 @@ import { normalizeJsonInputText, parseJsonInput } from "./json-input.js";
 
 const MAX_TIMEOUT_MS = 2_147_483_647;
 export const DEFAULT_MAX_SWAGGER_BYTES = 64 * 1024 * 1024;
+/** 根配置省略 timeoutMs 时的下载超时；与文档示例里一直写的 15_000 一致。 */
+export const DEFAULT_SWAGGER_TIMEOUT_MS = 15_000;
 
 export function isValidFetchTimeout(value: unknown): value is number {
   return Number.isInteger(value) && Number(value) > 0 && Number(value) <= MAX_TIMEOUT_MS;

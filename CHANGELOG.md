@@ -5,6 +5,8 @@ All notable changes to xapiforge are documented here.
 ## Unreleased
 
 - `@xapiforge/core` 新增 `createEnvelopeMiddleware({ code, data, message, ok })`：可选的官方信封解包 middleware，按显式配置的字段名解出 `{ code, data, msg }` 一族信封里的业务数据，业务失败抛 `ApiError(kind="business")`（带后端文案、业务码和完整信封）。不探测字段名、不内置任何后端预置，「HTTP 200 + 鉴权码」的会话处理留给调用方。2xx JSON 但不是信封的响应立即以 `ApiError(kind="parse")` 失败。
+- `@xapiforge/genapi` 根配置的 `timeoutMs` 改为可省略，默认 15 秒（`DEFAULT_SWAGGER_TIMEOUT_MS`）；写了仍按原规则校验。
+- `docs/internals/swagger-pitfalls.md` 记录 knife4j（Spring）文档的两类问题与处理边界：按组拆成多份 `api-docs`、非 ASCII / Java 泛型 schema 名在 `XxxSchemas` 便利导出里被静默丢弃；暂不处理，接口少时手写。
 
 ## 0.2.0-alpha.0 - 2026-08-10
 

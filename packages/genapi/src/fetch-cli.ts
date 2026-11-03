@@ -25,7 +25,12 @@ import {
   isSwaggerFileSource,
   resolveSwaggerInputPath,
 } from "./swagger-source.js";
-import { DEFAULT_MAX_SWAGGER_BYTES, fetchSwaggerJson, formatBytes } from "./swagger-fetch.js";
+import {
+  DEFAULT_MAX_SWAGGER_BYTES,
+  DEFAULT_SWAGGER_TIMEOUT_MS,
+  fetchSwaggerJson,
+  formatBytes,
+} from "./swagger-fetch.js";
 import { parseJsonInput } from "./json-input.js";
 import { pathIdentity, resolvePhysicalPath } from "./filesystem-path.js";
 
@@ -408,7 +413,7 @@ async function main(): Promise<void> {
               swaggerRoot,
               project,
               service,
-              timeoutMs: config.timeoutMs,
+              timeoutMs: config.timeoutMs ?? DEFAULT_SWAGGER_TIMEOUT_MS,
               maxBytes,
               offline,
               dryRun: cli.dryRun,

@@ -120,7 +120,7 @@ interface ProjectTypeExportConfig {
 }
 
 interface XApiForgeConfig {
-  timeoutMs: number;
+  timeoutMs?: number; // 默认 15_000
   maxSwaggerBytes?: number; // 默认 64 MiB
   outputDir: string;
   genOutputDir?: string;

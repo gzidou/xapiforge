@@ -33,7 +33,7 @@ Create `xapiforge.config.ts`:
 import { defineConfig } from "@xapiforge/genapi";
 
 export default defineConfig({
-  timeoutMs: 15_000,
+  timeoutMs: 15_000, // 可省略，默认 15_000
   maxSwaggerBytes: 64 * 1024 * 1024,
   outputDir: "swagger",
   genOutputDir: "src/api/gen",

@@ -10,7 +10,7 @@ genapi v2 是破坏性版本，不保留旧的 Swagger URL 片段配置或旧类
 import { defineConfig } from "@xapiforge/genapi";
 
 export default defineConfig({
-  timeoutMs: 15_000,
+  timeoutMs: 15_000, // 可省略，默认 15_000
   maxSwaggerBytes: 64 * 1024 * 1024,
   outputDir: "swagger",
   genOutputDir: "src/api/gen",

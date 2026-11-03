@@ -131,6 +131,12 @@ test("validateConfig rejects unsafe IDs, generated-name collisions, and invalid 
     () => validateConfig({ ...config([service("base")]), timeotMs: 1 }),
     /根配置 包含未知字段：timeotMs/,
   );
+  // timeoutMs 可省略（走默认 15 秒）；写了就要合法
+  assert.doesNotThrow(() => {
+    const withoutTimeout = config([service("base")]);
+    delete withoutTimeout.timeoutMs;
+    validateConfig(withoutTimeout);
+  });
   assert.throws(
     () => validateConfig({ ...config([service("base")]), timeoutMs: 0.5 }),
     /timeoutMs 必须是 1\.\.2147483647 范围内的整数毫秒/,

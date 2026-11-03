@@ -747,7 +747,7 @@ async function testEnvelopeMiddleware(): Promise<void> {
       "envelope-mw 缺 code 字段 → ApiError",
     );
     ok(missing?.kind === "parse", "envelope-mw 缺 code 字段 kind=parse");
-    ok(missing?.message.includes("code"), "envelope-mw 缺 code 字段文案点名字段");
+    ok(missing?.message.includes("code") === true, "envelope-mw 缺 code 字段文案点名字段");
     const arrayRoot = await expectThrows(
       () => unwrap(spring, json([{ id: 1 }])),
       ApiError,

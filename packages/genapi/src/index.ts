@@ -111,7 +111,8 @@ export interface ProjectConfig {
 }
 
 export interface XApiForgeConfig {
-  timeoutMs: number;
+  /** 下载单个远程 OpenAPI 文档的超时（毫秒）；不写用 `DEFAULT_SWAGGER_TIMEOUT_MS`（15 秒）。 */
+  timeoutMs?: number;
   /** 单个本地文件、离线缓存或远程响应的最大字节数；默认 64 MiB。 */
   maxSwaggerBytes?: number;
   outputDir: string;
@@ -422,7 +423,8 @@ export function validateConfig(config: XApiForgeConfig): void {
   if (config.genOutputDir !== undefined) {
     assertFileSystemPath(config.genOutputDir, "genOutputDir");
   }
-  if (!isValidFetchTimeout(config.timeoutMs)) {
+  // timeoutMs 可省略（走默认值）；写了就必须合法，不接受 0 / 小数 / 超过 32 位定时器上限。
+  if (config.timeoutMs !== undefined && !isValidFetchTimeout(config.timeoutMs)) {
     throw configError("timeoutMs 必须是 1..2147483647 范围内的整数毫秒");
   }
   if (config.maxSwaggerBytes !== undefined && !isValidSwaggerSize(config.maxSwaggerBytes)) {
