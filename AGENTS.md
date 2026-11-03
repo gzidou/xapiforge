@@ -32,7 +32,7 @@ pnpm install
 pnpm verify                # canonical full validation gate
 pnpm build                 # build all 6 packages
 pnpm test                  # package-level tests
-pnpm test:scenarios        # 222 core scenarios
+pnpm test:scenarios        # 259 core scenarios
 pnpm test:download         # 25 native-download scenarios
 pnpm docs:dev              # VitePress docs dev server
 pnpm docs:build            # VitePress production build
@@ -154,4 +154,4 @@ For stub/placeholder code hitting `no-unsafe-*` errors, use type annotations or 
 pnpm verify
 ```
 
-`pnpm verify` is the canonical gate. It covers all six package builds, workspace and root type checks, formatting, lint, package tests, 222 core scenarios, 25 native-download scenarios, and the VitePress production build. Before an npm release, run `pnpm publish:dry-run` as well; see the [publishing manual](./docs/internals/publishing.md).
+`pnpm verify` is the canonical gate. It covers all six package builds, workspace and root type checks, formatting, lint, package tests, 259 core scenarios, 25 native-download scenarios, and the VitePress production build. Before an npm release, run `pnpm publish:dry-run` as well; see the [publishing manual](./docs/internals/publishing.md).

@@ -46,7 +46,7 @@ pnpm test:scenarios
 
 - 自动起停 mock-server（已运行则复用，未运行则拉子进程，跑完自动 kill）
 - 直接 `import @xapiforge/core`，不依赖浏览器
-- 9 个 Section 共 **222 个断言**；场景与断言不是一一对应，一个场景可能包含多个检查
+- 10 个 Section 共 **259 个断言**；场景与断言不是一一对应，一个场景可能包含多个检查
 - 覆盖：HttpClient HTTP 层 / middleware 单元 / AuthService 单飞+窗口 / C1-C10 envelope 变体 / 429 重试 / A14 业务 200 鉴权码 / A16+D2+D7 端到端鉴权 / B19 文件下载
 
 **期望输出**：
@@ -73,7 +73,7 @@ target: http://localhost:8787
 ━━━ Section 8: client.request 走内核（无 schema）━━━
 ━━━ Section 9: 文件下载走内核（progress + 文件名 + auth）━━━
 
-✅ Passed: 222
+✅ Passed: 259
 ❌ Failed: 0
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

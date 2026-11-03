@@ -41,7 +41,7 @@
 
 > **关键场景**：ABP + Spring Boot + OAuth2 + RFC 7807 + GraphQL + 微信/钉钉 + 支付宝
 >
-> **v0.2 库的承诺**：库**不预设** envelope 形状。业务侧写 **middleware**（如 `createAbpUnwrapMw`）声明。
+> **v0.2 库的承诺**：库**不预设** envelope 形状、不探测字段名。`{ code, data, msg }` 一族由工程用官方 `createEnvelopeMiddleware` 显式配字段名；其余业务侧写 **middleware**（如 `createAbpUnwrapMw`）声明。
 > 库内置 `auth-mw`（401 → refresh → retry）+ `retry-mw`（429 退避）+ `http-error-mw`（最终 `validateStatus` 校验 → `ApiError`）。
 
 | #   | 后端 / 协议                                  | 典型场景                  | 响应形态                                                          | 库行为                                                                                           |
@@ -111,7 +111,7 @@
 
 ## Layer C：业务 envelope 变体（unhappy path）
 
-> **v0.2 库的承诺**：envelope 形状完全归业务侧 **middleware**（`onResponse` 阶段解包）。
+> **v0.2 库的承诺**：envelope 在 **middleware** 的 `onResponse` 阶段解包。C1–C8 这类「顶层 `code` + `data`」变体官方 `createEnvelopeMiddleware` 按字段名配置即可覆盖（`ok` 支持列表与布尔，严格相等）；C9 数组根、C10 多层嵌套由业务侧自写。
 > 库提供 `Middleware` 类型 + `HttpResponse`（含 `bodyText` / `envelope` / `data`）。
 
 | #   | envelope 形态                           | 例子                                                                    | 业务侧实现                                                              |
@@ -258,7 +258,7 @@
 
 ### ✅ Node 单测脚本实测（2026-07-31）
 
-测试脚本 [scripts/test/scenarios.ts](../../scripts/test/scenarios.ts)，直接 import `@xapiforge/core`，覆盖 9 个 Section 共 **222 个断言**，全部通过：
+测试脚本 [scripts/test/scenarios.ts](../../scripts/test/scenarios.ts)，直接 import `@xapiforge/core`，覆盖 10 个 Section 共 **259 个断言**，全部通过：
 
 ```text
 xapiforge 场景验证开始
@@ -274,7 +274,7 @@ target: http://localhost:8787
 ━━━ Section 8: client.request 走内核（无 schema）━━━ ← data-or-throw / validateStatus
 ━━━ Section 9: 文件下载走内核 ━━━                  ← progress / 文件名 / auth / HTTP 错误
 
-✅ Passed: 222
+✅ Passed: 259
 ❌ Failed: 0
 ```
 

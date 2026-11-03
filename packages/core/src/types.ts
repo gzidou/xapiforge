@@ -6,7 +6,7 @@
  * 核心设计：
  *   1. createNet 成功只返回 `{ data, response }`，失败只抛 ApiError。
  *   2. HTTP 成功判定默认使用 response.ok，可由全局或单次请求 validateStatus 覆盖。
- *   3. envelope 解包 / 业务错误判定归业务侧 middleware。
+ *   3. envelope 解包 / 业务错误判定在 middleware 层：常见 `{ code, data, msg }` 一族用 createEnvelopeMiddleware 配字段名，特殊形状业务侧自写。
  *   4. 无全局单例，运行时 fetch、鉴权和错误文案解析均可注入。
  */
 
@@ -228,7 +228,7 @@ export interface NetRequestOptions {
 export interface NetConfig {
   baseURL: string;
   authService: AuthService;
-  /** 业务侧 middleware（envelope 解包 / 业务错误判定） */
+  /** 业务 middleware（envelope 解包 / 业务错误判定）：官方 createEnvelopeMiddleware 或业务侧自写的都挂这里 */
   middleware?: Middleware[];
   /** 全局 HTTP 成功判定；默认 response.ok。单次请求可覆盖。 */
   validateStatus?: ValidateStatus;

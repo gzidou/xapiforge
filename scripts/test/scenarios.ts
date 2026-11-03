@@ -26,6 +26,7 @@ import {
   createRetryMiddleware,
   createHttpErrorMiddleware,
   createAuthMiddleware,
+  createEnvelopeMiddleware,
   createNet,
 } from "@xapiforge/core";
 import type { TokenStore, AuthRefresher, Middleware } from "@xapiforge/core";
@@ -636,6 +637,201 @@ async function testEnvelopeVariants(): Promise<void> {
     const payload = JSON.parse(res.bodyText);
     ok(payload.code === 500, "L4.8 biz code=500");
     ok(!!payload.message, "L4.8 biz error message");
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Section 4b: createEnvelopeMiddleware（官方信封解包，按字段名配置）
+//   前半直接调 onResponse 验形状判定；后半经 createNet + mock 验解包结果到业务手里、
+//   业务错误 reject、HTTP 401 仍由内核 auth-mw 处理。
+// ═══════════════════════════════════════════════════════════════════════
+
+async function testEnvelopeMiddleware(): Promise<void> {
+  console.log("\n━━━ Section 4b: createEnvelopeMiddleware（官方信封解包）━━━");
+  const request = new Request("http://x");
+  const json = (body: unknown, status = 200): Response =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+    });
+  const readJson = async (response: Response | undefined): Promise<unknown> =>
+    response ? ((await response.json()) as unknown) : undefined;
+  const unwrap = (mw: Middleware, response: Response): Promise<Response | undefined> =>
+    Promise.resolve(mw.onResponse?.({ request, response }));
+
+  // Spring 风格 { code: 200, data, msg }
+  const spring = createEnvelopeMiddleware({ code: "code", data: "data", message: "msg", ok: 200 });
+
+  // ── 成功：data 为对象 / 字符串（C1）/ 数组（C2）/ null（C4）都原样解出 ──
+  {
+    eq(
+      await readJson(await unwrap(spring, json({ code: 200, data: { id: 1 }, msg: "ok" }))),
+      { id: 1 },
+      "envelope-mw 解包对象",
+    );
+    eq(
+      await readJson(await unwrap(spring, json({ code: 200, data: "https://file.url" }))),
+      "https://file.url",
+      "envelope-mw 解包字符串（C1）",
+    );
+    eq(
+      await readJson(await unwrap(spring, json({ code: 200, data: [{ id: 1 }, { id: 2 }] }))),
+      [{ id: 1 }, { id: 2 }],
+      "envelope-mw 解包数组（C2）",
+    );
+    eq(
+      await readJson(await unwrap(spring, json({ code: 200, data: null }))),
+      null,
+      "envelope-mw 解包 null（C4）",
+    );
+  }
+
+  // ── data 字段缺失 → 空 body + Content-Length: 0（openapi-fetch 据此返回 data: undefined，不去 parse 空串）──
+  {
+    const out = await unwrap(spring, json({ code: 200, msg: "ok" }));
+    ok(out?.headers.get("content-length") === "0", "envelope-mw data 缺失 → Content-Length: 0");
+    eq(await out?.text(), "", "envelope-mw data 缺失 → 空 body");
+    ok(out?.status === 200, "envelope-mw 解包后状态码沿用");
+  }
+
+  // ── 非 2xx / 非 JSON / 空 body → 原样放行（交给内核）──
+  {
+    const r401 = json({ code: 401, msg: "token expired" }, 401);
+    ok((await unwrap(spring, r401)) === r401, "envelope-mw 401 放行（交给 auth-mw，不当业务错误）");
+    const text = new Response("plain", { status: 200, headers: { "Content-Type": "text/plain" } });
+    ok((await unwrap(spring, text)) === text, "envelope-mw 非 JSON 放行");
+    const empty = new Response("", {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+    ok((await unwrap(spring, empty)) === empty, "envelope-mw 空 body 放行（A22）");
+    const broken = new Response("{not json", {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+    ok(
+      (await unwrap(spring, broken)) === broken,
+      "envelope-mw 非法 JSON 放行（由 createNet 归一为 parse）",
+    );
+  }
+
+  // ── 业务失败 → ApiError(kind=business)，message 来自后端字段，code / body 保留 ──
+  {
+    const error = await expectThrows(
+      () => unwrap(spring, json({ code: 500, data: null, msg: " 库存不足 " })),
+      ApiError,
+      "envelope-mw 业务码 → ApiError",
+    );
+    ok(error?.kind === "business", "envelope-mw 业务错误 kind=business");
+    ok(error?.code === 500, "envelope-mw 业务错误 code=500");
+    ok(error?.message === "库存不足", "envelope-mw 业务错误 message 取 msg 字段并去空白");
+    ok((error?.body as { code: number }).code === 500, "envelope-mw 业务错误 body 是完整信封");
+    ok(error?.status === 200, "envelope-mw 业务错误 status 仍是 HTTP 200");
+
+    const noMessage = await expectThrows(
+      () => unwrap(spring, json({ code: 500, data: null })),
+      ApiError,
+      "envelope-mw 业务码无文案 → ApiError",
+    );
+    ok(
+      noMessage?.message === "请求失败（业务码 500）",
+      "envelope-mw 业务错误无文案 → 兜底文案（C5）",
+    );
+  }
+
+  // ── 不是信封：缺 code 字段 / 数组根（C9）→ ApiError(kind=parse)，不静默透传 ──
+  {
+    const missing = await expectThrows(
+      () => unwrap(spring, json({ foo: 1 })),
+      ApiError,
+      "envelope-mw 缺 code 字段 → ApiError",
+    );
+    ok(missing?.kind === "parse", "envelope-mw 缺 code 字段 kind=parse");
+    ok(missing?.message.includes("code"), "envelope-mw 缺 code 字段文案点名字段");
+    const arrayRoot = await expectThrows(
+      () => unwrap(spring, json([{ id: 1 }])),
+      ApiError,
+      "envelope-mw 数组根 → ApiError",
+    );
+    ok(arrayRoot?.kind === "parse", "envelope-mw 数组根（C9）kind=parse");
+  }
+
+  // ── 成功码严格相等（不转类型）；ok 列表；布尔成功位（C6 / C7）──
+  {
+    const abp = createEnvelopeMiddleware({ code: "code", data: "data", ok: 0 });
+    const strict = await expectThrows(
+      () => unwrap(abp, json({ code: "0", data: { id: 1 } })),
+      ApiError,
+      'envelope-mw ok: 0 不匹配 "0"',
+    );
+    ok(strict?.kind === "business", "envelope-mw 字符串码与数字 ok 不相等 → business");
+
+    const both = createEnvelopeMiddleware({ code: "code", data: "data", ok: [0, "0"] });
+    eq(
+      await readJson(await unwrap(both, json({ code: "0", data: { id: 1, name: "x" } }))),
+      { id: 1, name: "x" },
+      "envelope-mw ok 列表含字符串码（C6）",
+    );
+
+    const flag = createEnvelopeMiddleware({
+      code: "success",
+      data: "data",
+      message: "message",
+      ok: true,
+    });
+    eq(
+      await readJson(await unwrap(flag, json({ success: true, data: { id: 1, name: "x" } }))),
+      { id: 1, name: "x" },
+      "envelope-mw 布尔成功位（C7）",
+    );
+    const flagError = await expectThrows(
+      () => unwrap(flag, json({ success: false, message: "no permission" })),
+      ApiError,
+      "envelope-mw 布尔失败 → ApiError",
+    );
+    ok(flagError?.code === "false", "envelope-mw 布尔失败 code 转成字符串");
+    ok(flagError?.message === "no permission", "envelope-mw 布尔失败 message");
+  }
+
+  // ── 经 createNet + mock：解包结果到业务手里；业务错误 reject；401 仍走内核 refresh 后再解包 ──
+  {
+    const store = makeMemoryStore("expired");
+    const { refresher, state } = makeRefresher({ token: "mock-token" });
+    const auth = new AuthService({
+      tokenStore: store,
+      authRefresher: refresher,
+      onAuthFailed: () => undefined,
+    });
+    const api = createNet<Record<string, never>>({
+      baseURL: BASE,
+      authService: auth,
+      // mock 的信封是 Demo ABP 风格 { code: 0, data, message }
+      middleware: [
+        createEnvelopeMiddleware({ code: "code", data: "data", message: "message", ok: 0 }),
+      ],
+      maxRetries: 1,
+    }) as unknown as { GET: (p: string) => Promise<{ data: unknown; response: Response }> };
+
+    const users = await api.GET("/api/identity/users");
+    ok(
+      state.calls === 1,
+      `envelope-mw 经 createNet: 401 先由 auth-mw refresh（refresh=${state.calls}）`,
+    );
+    ok(
+      Array.isArray((users.data as { items?: unknown[] }).items),
+      "envelope-mw 经 createNet: 重发后拿到解包的分页 data（C3）",
+    );
+
+    const detail = await api.GET("/api/test/c5-no-msg");
+    eq(detail.data, { id: 1, name: "x" }, "envelope-mw 经 createNet: 解包对象到业务手里");
+
+    const error = await expectThrows(
+      () => api.GET("/api/test/biz-code-500"),
+      ApiError,
+      "envelope-mw 经 createNet: 业务错误 reject",
+    );
+    ok(error?.kind === "business" && error.code === 500, "envelope-mw 经 createNet: kind/code");
+    ok(error?.message === "业务错误：库存不足", "envelope-mw 经 createNet: message 来自后端");
   }
 }
 
@@ -1662,6 +1858,7 @@ async function main(): Promise<void> {
     await testMiddlewares();
     await testAuthService();
     await testEnvelopeVariants();
+    await testEnvelopeMiddleware();
     await testMiddlewareChainAndRetry();
     await testA14AtLibLevel();
     await testEndToEndAuth();

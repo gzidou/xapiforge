@@ -2,7 +2,7 @@
  * @xapiforge/core — 框架无关的公共网络库
  *
  * 架构（v0.2 破坏式重写）：
- *   - 纯 HTTP 客户端（envelope 解包归业务侧 middleware）
+ *   - 纯 HTTP 客户端（envelope 解包在 middleware 层：常见 `{ code, data, msg }` 一族用官方 createEnvelopeMiddleware 按字段名配置，特殊形状业务侧自写）
  *   - 工厂模式（无全局单例）
  *   - AuthService 独立（refresh 单飞 + 窗口保护 + 超时）
  *   - createNet<paths> 封装 openapi-fetch + data-or-throw + middleware + retry loop
@@ -67,10 +67,16 @@ export { AuthService } from "./auth-service.js";
 // ─── createNet（业务主入口，封装 openapi-fetch + middleware + retry loop）───
 export { createNet } from "./create-net.js";
 
-// ─── 官方 middleware ───
+// ─── 官方 middleware（内核三个由 createNet 自动注入；createEnvelopeMiddleware 可选、显式挂）───
 export {
   createAuthMiddleware,
   createRetryMiddleware,
   createHttpErrorMiddleware,
+  createEnvelopeMiddleware,
 } from "./middleware/index.js";
-export type { RetryMiddlewareConfig, HttpErrorMiddlewareConfig } from "./middleware/index.js";
+export type {
+  RetryMiddlewareConfig,
+  HttpErrorMiddlewareConfig,
+  EnvelopeCode,
+  EnvelopeMiddlewareConfig,
+} from "./middleware/index.js";

@@ -4,6 +4,8 @@ All notable changes to xapiforge are documented here.
 
 ## Unreleased
 
+- `@xapiforge/core` 新增 `createEnvelopeMiddleware({ code, data, message, ok })`：可选的官方信封解包 middleware，按显式配置的字段名解出 `{ code, data, msg }` 一族信封里的业务数据，业务失败抛 `ApiError(kind="business")`（带后端文案、业务码和完整信封）。不探测字段名、不内置任何后端预置，「HTTP 200 + 鉴权码」的会话处理留给调用方。2xx JSON 但不是信封的响应立即以 `ApiError(kind="parse")` 失败。
+
 ## 0.2.0-alpha.0 - 2026-08-10
 
 This alpha contains the breaking genapi v2 contract and is published under the `alpha` dist-tag. Existing users remain on the `0.1.x` `latest` line unless they explicitly opt into the prerelease.

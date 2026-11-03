@@ -23,7 +23,7 @@
 │  ├─ auth-mw      注入 token / 401 → refresh → retry     │
 │  ├─ retry-mw     429 → RetryableError → 退避重试        │
 │  ├─ http-error-mw 最终状态校验 → ApiError(kind="http")  │
-│  └─ 业务 mw      envelope 解包 / 业务错误（业务侧写）    │
+│  └─ 业务 mw      envelope 解包 / 业务错误（官方 envelope-mw 配字段名，或业务侧自写）│
 └──────────────────────┬──────────────────────────────────┘
                        │
 ┌──────────────────────▼──────────────────────────────────┐
@@ -42,7 +42,7 @@
 **核心设计原则**：
 
 1. **库只管 HTTP + 鉴权状态机 + 错误传播**
-2. **envelope 解包 / 业务错误判定归业务侧 middleware**
+2. **envelope 解包 / 业务错误判定在 middleware 层**：`{ code, data, msg }` 一族用官方 `createEnvelopeMiddleware` 按字段名配置（不探测、不预置后端名字）；特殊形状业务侧自写
 3. **无全局单例**（工厂模式，支持多 client）
 4. **无 BizError**（业务侧自定义错误类型）
 5. **单请求路径**（openapi-fetch 统一，无 raw/request 双路径）
