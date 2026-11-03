@@ -84,7 +84,8 @@ const { data } = await api.GET("/orders/{id}", { params: { path: { id: "1" } } }
 
 行为规则：
 
-- 非 2xx、非 JSON、空 body、非法 JSON：原样放行。401 交给 `auth-mw` 刷新，429 交给 `retry-mw`，其余交给 `http-error-mw`；非法 JSON 由 createNet 归一为 `ApiError(kind="parse")`。
+- 是不是信封按内容判，不看 Content-Type 是不是 json：有的后端把 JSON 标成 `text/html`，照样解包 / 判业务失败。明确声明为二进制（图片、音视频、`octet-stream`、`pdf`、`zip`）的不读。
+- 非 2xx、二进制、空 body、解析不了的（纯文本、非法 JSON）：原样放行。401 交给 `auth-mw` 刷新，429 交给 `retry-mw`，其余交给 `http-error-mw`；非法 JSON 由 createNet 归一为 `ApiError(kind="parse")`。
 - 2xx JSON 但不是对象或没有 `code` 字段：抛 `ApiError(kind="parse")`。既然声明了信封协议，拿到不是信封的东西就是后端或配置错了，当场报错比静默透传容易发现。
 - `data` 字段缺失：响应体置空、`Content-Length: 0`，openapi-fetch 返回 `data: undefined`。
 - 业务失败：`ApiError.code` 是业务码（布尔成功位失败时为 `"false"`），`message` 取配置的文案字段（没有则「请求失败（业务码 N）」），`body` 是完整信封，`status` 仍是 HTTP 状态。

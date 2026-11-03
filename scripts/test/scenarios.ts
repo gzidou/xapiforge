@@ -694,12 +694,41 @@ async function testEnvelopeMiddleware(): Promise<void> {
     ok(out?.status === 200, "envelope-mw 解包后状态码沿用");
   }
 
+  // ── 后端把 JSON 标成 text/html：按内容判，照样解包 / 判业务失败 ──
+  {
+    const html = (body: unknown): Response =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "text/html;charset=UTF-8" },
+      });
+    eq(
+      await readJson(await unwrap(spring, html({ code: 200, data: [1, 2] }))),
+      [1, 2],
+      "envelope-mw text/html 的 JSON 信封照样解包",
+    );
+    let error: ApiError | undefined;
+    try {
+      await unwrap(spring, html({ code: 401, msg: "token 已过期" }));
+    } catch (e) {
+      error = e as ApiError;
+    }
+    ok(
+      error?.kind === "business" && error.code === 401,
+      "envelope-mw text/html 的业务失败照样抛 business",
+    );
+  }
+
   // ── 非 2xx / 非 JSON / 空 body → 原样放行（交给内核）──
   {
     const r401 = json({ code: 401, msg: "token expired" }, 401);
     ok((await unwrap(spring, r401)) === r401, "envelope-mw 401 放行（交给 auth-mw，不当业务错误）");
     const text = new Response("plain", { status: 200, headers: { "Content-Type": "text/plain" } });
     ok((await unwrap(spring, text)) === text, "envelope-mw 非 JSON 放行");
+    const image = new Response('{"code":500}', {
+      status: 200,
+      headers: { "Content-Type": "image/png" },
+    });
+    ok((await unwrap(spring, image)) === image, "envelope-mw 明确二进制不读、放行");
     const empty = new Response("", {
       status: 200,
       headers: { "Content-Type": "application/json" },

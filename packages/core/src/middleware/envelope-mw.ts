@@ -10,8 +10,11 @@
  *   字段名、成功码、错误类型各抄各的。这里把「按字段名解包 + 业务码判失败」做成一个可配置的官方 middleware。
  *
  * 做了什么（onResponse，在内核 auth / retry / httpError 之前执行）：
- *   1. 非 2xx、非 JSON、空 body → 原样放行，交给内核（401 → auth、429 → retry、其余 → httpError）。
- *   2. JSON 解析失败 → 原样放行，openapi-fetch 解析时会再失败，由 createNet 归一为 ApiError(kind="parse")。
+ *   1. 非 2xx、明确是二进制的（图片 / 音视频 / octet-stream / pdf / zip）、空 body → 原样放行，交给内核
+ *      （401 → auth、429 → retry、其余 → httpError）。
+ *   2. 是不是信封按内容判，不按 Content-Type 判：有的后端把 JSON 标成 `text/html`、`text/plain`，
+ *      只认 json 类型就会把这种信封（包括业务失败、鉴权码）原样漏给业务。解析不了 JSON → 原样放行，
+ *      openapi-fetch 解析时会再失败，由 createNet 归一为 ApiError(kind="parse")；纯文本接口同理不受影响。
  *   3. body 不是对象或没有 `code` 字段 → 抛 ApiError(kind="parse")：既然工程声明了这是信封协议，
  *      拿到不是信封的东西就是后端或配置写错，当场报错比静默透传更容易发现。
  *   4. `code` 等于 `ok` 之一 → 成功：用 `data` 字段替换响应体，业务拿到的 data 就是解包后的数据。
@@ -52,6 +55,16 @@ export interface EnvelopeMiddlewareConfig {
    * 例：ABP 风格 `0`；Spring 风格 `200`；`{ success: true }` 写 `true`；后端混用时写 `[0, "0"]`。
    */
   ok: EnvelopeCode | readonly EnvelopeCode[];
+}
+
+/** 明确声明为二进制的 Content-Type：不读成文本（文件可能很大，也不可能是信封）。 */
+const BINARY_CONTENT_TYPE = /^(image|audio|video)\/|^application\/(octet-stream|pdf|zip)/;
+
+/**
+ * 响应是不是明确的二进制。例：`image/png` → true；`text/html;charset=UTF-8`、`application/json`、没有 Content-Type → false。
+ */
+function isBinary(response: Response): boolean {
+  return BINARY_CONTENT_TYPE.test(response.headers.get("content-type")?.toLowerCase().trim() ?? "");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -110,8 +123,7 @@ export function createEnvelopeMiddleware(config: EnvelopeMiddlewareConfig): Midd
       // 这里若去读 401 的 body（常常恰好也是 {code:401,...}）会把会话失效误报成业务错误。
       if (!response.ok) return response;
 
-      const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
-      if (!contentType.includes("json")) return response;
+      if (isBinary(response)) return response;
 
       // clone 后读，原 response 的 body 留给 openapi-fetch。
       const text = await response.clone().text();
