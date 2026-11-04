@@ -4,6 +4,12 @@ All notable changes to xapiforge are documented here.
 
 ## Unreleased
 
+## 0.2.0-alpha.3 - 2026-11-03
+
+### Added
+
+- **genapi**: 别名冲突一次报全，并附可粘贴的 aliases 建议 (a58b3bb)
+
 ## 0.2.0-alpha.2 - 2026-11-03
 
 ### Fixed
