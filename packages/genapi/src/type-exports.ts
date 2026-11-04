@@ -195,6 +195,7 @@ function collectConvenienceExports(options: {
 
   const entries: ExportEntry[] = [];
   const targets = new Map<string, ExportEntry>();
+  const aliasConflicts = new Map<string, AliasConflict>();
   const directAliases = new Map<string, Set<string>>();
   const nestedNamespaces = new Map<string, Set<string>>();
   const reservedFlatNames = new Set([
@@ -217,21 +218,30 @@ function collectConvenienceExports(options: {
     const target = `${scope}\0${namespace ?? ""}\0${alias}`;
     const previous = targets.get(target);
     if (previous) {
-      const qualified = [
-        options.strategy === "service-namespace"
-          ? `${pascalCaseConfigId(schema.service)}Schemas`
-          : "",
-        namespace ?? "",
-        alias,
-      ]
-        .filter(Boolean)
-        .join(".");
-      throw new Error(
-        `[genapi] schema alias 冲突：${qualified}\n` +
-          `  - ${previous.service}/${previous.full}\n` +
-          `  - ${schema.service}/${schema.full}\n` +
-          "生成器不会根据顺序保留、跳过或自动重命名；请配置唯一的 typeExports.aliases。",
-      );
+      // 先记下、继续扫：一次报出全部冲突，免得接入者改一处、重跑、再撞下一处。
+      const conflict = aliasConflicts.get(target);
+      if (conflict) {
+        conflict.members.push({ service: schema.service, full: schema.full });
+      } else {
+        const qualified = [
+          options.strategy === "service-namespace"
+            ? `${pascalCaseConfigId(schema.service)}Schemas`
+            : "",
+          namespace ?? "",
+          alias,
+        ]
+          .filter(Boolean)
+          .join(".");
+        aliasConflicts.set(target, {
+          qualified,
+          alias,
+          members: [
+            { service: previous.service, full: previous.full },
+            { service: schema.service, full: schema.full },
+          ],
+        });
+      }
+      continue;
     }
 
     if (
@@ -271,7 +281,54 @@ function collectConvenienceExports(options: {
     targets.set(target, entry);
     entries.push(entry);
   }
+  if (aliasConflicts.size > 0) throw new Error(formatAliasConflicts([...aliasConflicts.values()]));
   return entries;
+}
+
+/** 一组短名相同的 schema：`qualified` 是冲突的导出路径，`members` 是落到这个路径上的全部 schema。 */
+interface AliasConflict {
+  qualified: string;
+  alias: string;
+  members: { service: string; full: string }[];
+}
+
+/**
+ * 给冲突 schema 拟一个导出名：取短名前面那一段命名空间做前缀。
+ *
+ * 例：`Zhsl.Monitor.WaterTemperatureDataDto` → `MonitorWaterTemperatureDataDto`；没有命名空间段时原样返回短名。
+ * 只用来写进报错里的建议配置，生成器不会自动采用。
+ */
+function suggestAlias(full: string, alias: string): string {
+  const parts = full.split(".").filter(Boolean);
+  const prefix = parts.length >= 2 ? safeTypeAlias(parts[parts.length - 2]!) : "";
+  return prefix ? `${prefix.charAt(0).toUpperCase()}${prefix.slice(1)}${alias}` : alias;
+}
+
+/**
+ * 把全部别名冲突拼成一条报错：逐组列出冲突的 schema，最后给出可直接粘贴的 `typeExports.aliases` 建议。
+ *
+ * 建议给每组的每个成员都起带前缀的名字，不替接入者决定谁保留短名；想保留的那条删掉即可。
+ */
+function formatAliasConflicts(conflicts: readonly AliasConflict[]): string {
+  const groups = conflicts.map(
+    (conflict) =>
+      `[genapi] schema alias 冲突：${conflict.qualified}\n` +
+      conflict.members.map((member) => `  - ${member.service}/${member.full}`).join("\n"),
+  );
+  const suggestions = conflicts.flatMap((conflict) =>
+    conflict.members.map(
+      (member) =>
+        `  { service: ${JSON.stringify(member.service)}, schema: ${JSON.stringify(member.full)}, ` +
+        `exportAs: ${JSON.stringify(suggestAlias(member.full, conflict.alias))} },`,
+    ),
+  );
+  return (
+    `[genapi] 共 ${conflicts.length} 处 schema alias 冲突（同一 service 内短名相同）\n` +
+    `${groups.join("\n")}\n` +
+    "生成器不会根据顺序保留、跳过或自动重命名；请在项目的 typeExports.aliases 里为它们配置唯一导出名。\n" +
+    "建议配置如下（每组要保留短名的那条删掉，exportAs 可按业务含义改）：\n" +
+    `aliases: [\n${suggestions.join("\n")}\n]`
+  );
 }
 
 function publicEntryNames(entry: ExportEntry): string[] {

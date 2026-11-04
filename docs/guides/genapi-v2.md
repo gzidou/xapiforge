@@ -126,6 +126,22 @@ v2 不生成 `AllSchemas`，也不会把多个 service 的 schema 交叉合并�
 
 跨 service 的重复 full schema name 是合法输入，不需要 hook 或 alias。只有同一 service、同一便利 namespace 中出现短名碰撞时，才需要一条精确 alias。
 
+生成器一次扫完所有 service，把全部短名碰撞列在同一条报错里，末尾附一段可直接粘贴的 `aliases` 建议（以短名前一段命名空间做前缀），不用改一处、重跑、再撞下一处：
+
+```text
+[genapi] 共 1 处 schema alias 冲突（同一 service 内短名相同）
+[genapi] schema alias 冲突：EnvironmentSchemas.WaterTemperatureDataDto
+  - environment/Company.Environment.WaterTemperatureDataDto
+  - environment/Company.Monitor.WaterTemperatureDataDto
+…
+aliases: [
+  { service: "environment", schema: "Company.Environment.WaterTemperatureDataDto", exportAs: "EnvironmentWaterTemperatureDataDto" },
+  { service: "environment", schema: "Company.Monitor.WaterTemperatureDataDto", exportAs: "MonitorWaterTemperatureDataDto" },
+]
+```
+
+建议给每组所有成员都起了带前缀的名字，生成器不替你决定谁保留短名：要保留的那条删掉，其余按业务含义改名后放进项目的 `typeExports.aliases`。
+
 ## 三种导出策略
 
 | strategy                    | 便利名称位置          | 短名碰撞范围            | 前缀 namespace         |

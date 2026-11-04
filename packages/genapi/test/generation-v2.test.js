@@ -1767,6 +1767,54 @@ void stable;
   });
 });
 
+test("all alias collisions are reported in one error with a suggested aliases config", async () => {
+  await withTempProject(async (root) => {
+    await writeSwagger(
+      root,
+      "identity",
+      document({
+        schemas: {
+          "First.UserDto": { type: "object" },
+          "Second.UserDto": { type: "object" },
+          "First.RoleDto": { type: "object" },
+          "Second.RoleDto": { type: "object" },
+        },
+      }),
+    );
+    await writeSwagger(
+      root,
+      "infrastructure",
+      document({
+        schemas: { "Alpha.MenuDto": { type: "object" }, "Beta.MenuDto": { type: "object" } },
+      }),
+    );
+    await assert.rejects(
+      generate({
+        xapiForgeConfig: config([service("identity"), service("infrastructure")]),
+        projectId: "demo",
+        swaggerDir: "swagger",
+        outputDir: "generated",
+      }),
+      (error) => {
+        assert.match(error.message, /共 3 处 schema alias 冲突/);
+        assert.match(error.message, /schema alias 冲突：IdentitySchemas\.UserDto/);
+        assert.match(error.message, /schema alias 冲突：IdentitySchemas\.RoleDto/);
+        assert.match(error.message, /schema alias 冲突：InfrastructureSchemas\.MenuDto/);
+        assert.match(
+          error.message,
+          /\{ service: "identity", schema: "Second\.UserDto", exportAs: "SecondUserDto" \}/,
+        );
+        assert.match(
+          error.message,
+          /\{ service: "infrastructure", schema: "Alpha\.MenuDto", exportAs: "AlphaMenuDto" \}/,
+        );
+        return true;
+      },
+    );
+    assert.equal(existsSync(join(root, "generated")), false);
+  });
+});
+
 test("only same-service alias collisions fail; explicit aliases resolve them", async () => {
   await withTempProject(async (root) => {
     await writeSwagger(
