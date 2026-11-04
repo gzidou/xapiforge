@@ -98,6 +98,18 @@ export interface ServiceConfig {
    * service 级传 `{}` 表示「显式禁用所有 hook」。
    */
   hooks?: GenapiHooks;
+  /**
+   * 不下载这个 service 的原因（可选，非空字符串）。只有显式配置才跳过，本地有没有文档不影响要不要下载。
+   *
+   * 配了以后：`xapiforge-fetch` 不访问来源、不动本地文件、打印 `[skip] 原因`、不算失败。生成时：
+   * - 本地已有文档（以前下载过、随仓库提交）→ 照常用它生成，免得在用的类型因后端临时不可用而消失；
+   *   每次都提示「没有更新，可能不是最新」，去掉 skip 后下一次下载就更新。
+   * - 本地没有文档 → 不生成这个 service，并在输出里列出。
+   *
+   * 用途：某个后端服务暂时连不上或业务还用不到，又想把它留在服务表里（地址、名字不丢）。
+   * 必须写原因，免得以后没人知道它为什么没更新或不在产物里。例：`skip: "7007 端口没有监听，业务暂不使用"`。
+   */
+  skip?: string;
 }
 
 export interface ProjectConfig {
@@ -478,9 +490,10 @@ export function validateConfig(config: XApiForgeConfig): void {
       const servicePath = `${projectPath}.services[${serviceIndex}]`;
       if (!isRecord(service)) throw configError(`${servicePath} 必须是对象`);
       rejectRemovedFields(service, servicePath, ["baseHost", "port", "path"]);
-      assertAllowedFields(service, servicePath, ["displayName", "hooks", "name", "source"]);
+      assertAllowedFields(service, servicePath, ["displayName", "hooks", "name", "skip", "source"]);
       assertConfigId(service.name, `${servicePath}.name`);
       assertNonEmptyString(service.displayName, `${servicePath}.displayName`);
+      if (service.skip !== undefined) assertNonEmptyString(service.skip, `${servicePath}.skip`);
       validateSwaggerSource(service.source, `${servicePath}.source`);
       validateHooks(service.hooks, `${servicePath}.hooks`);
 
@@ -883,9 +896,33 @@ async function assertConfiguredSourcesOutsideOutput(options: {
  */
 async function buildProjectArtifacts(opts: GenerateOptions): Promise<ProjectArtifacts> {
   validateConfig(opts.xapiForgeConfig);
-  const project = opts.xapiForgeConfig.projects.find((p) => p.name === opts.projectId);
-  if (!project) {
+  const configured = opts.xapiForgeConfig.projects.find((p) => p.name === opts.projectId);
+  if (!configured) {
     throw new Error(`project '${opts.projectId}' not in xapiForgeConfig.projects`);
+  }
+  const configDirectoryForSkip = resolve(process.cwd(), opts.configDirectory ?? ".");
+  const swaggerRootForSkip = resolve(process.cwd(), opts.swaggerDir);
+  // 配了 skip 的 service：本地已有文档（以前下载过、随仓库提交）就照常用它生成，免得在用的类型突然消失；
+  // 本地没有就当它不存在，后面的读文档、生成类型、客户端、别名校验都只看剩下的。CLI 会逐个列出两种情况。
+  const project: ProjectConfig = {
+    ...configured,
+    services: configured.services.filter(
+      (service) =>
+        service.skip === undefined ||
+        existsSync(
+          resolveSwaggerInputPath({
+            configDirectory: configDirectoryForSkip,
+            swaggerRoot: swaggerRootForSkip,
+            projectId: configured.name,
+            service,
+          }),
+        ),
+    ),
+  };
+  if (project.services.length === 0) {
+    throw configError(
+      `project ${project.name} 的 service 全部配置了 skip 且本地都没有文档，没有可生成的内容`,
+    );
   }
 
   assertFileSystemPath(opts.swaggerDir, "GenerateOptions.swaggerDir");

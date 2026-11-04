@@ -69,6 +69,20 @@ const remoteSource = { url: "https://api.example.test/openapi.json" };
 - `source.url` 是完整 HTTP(S) URL，不再拼接 host、port 或 path。
 - 修改文件名、目录或 URL，不会改变 service/type 身份。
 
+## skip：显式跳过某个 service 的下载
+
+某个后端服务暂时连不上，或业务还用不到，又想把它留在配置里（名字、地址不丢），给它写上原因：
+
+```ts
+{ name: "safety", displayName: "Safety", source: { url: "http://10.0.0.8:7007/swagger/v1/swagger.json" }, skip: "7007 端口没有监听，业务暂不使用" }
+```
+
+- 只有显式配置 `skip` 才不下载；本地有没有文档不影响要不要下载——本地有文档不代表它是最新的，没配 `skip` 的 service 每次都照常下载覆盖。
+- `xapiforge-fetch` 不访问它的来源、不动本地文件、不算失败，打印 `[skip] <project>/<service> — 原因（…）`。
+- 生成时，本地**已有**它的文档（以前下载过、随仓库提交）就照常用这份生成，避免后端临时不可用时在用的类型突然消失；输出里标明「没有更新，可能不是最新」。本地**没有**文档就不生成它，同样列出。
+- 恢复后删掉 `skip`，下一次 `xapiforge-fetch` 就会更新本地文档。
+- `skip` 必须是非空字符串；一个 project 里全部 service 都被跳过且本地都没有文档时，生成报错。
+
 同一个 kebab-case service ID 会以不同、确定的形式出现在公开 API 中：
 
 | 位置                                       | `legacy-orders` 的结果   |

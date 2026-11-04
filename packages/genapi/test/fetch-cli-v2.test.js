@@ -191,6 +191,66 @@ test("fetch CLI covers URL online/cache offline/dry-run and direct file sources"
   }
 });
 
+test("fetch CLI skips services with skip configured and does not count them as failures", async () => {
+  const root = await mkdtemp(join(tmpdir(), "xapiforge-fetch-skip-"));
+  const spawnOptions = { cwd: root, encoding: "utf8" };
+  try {
+    await mkdir(join(root, "fixtures"), { recursive: true });
+    await writeFile(join(root, "fixtures/local.json"), JSON.stringify(openApiDocument), "utf8");
+    await writeConfig(
+      root,
+      config("online", "unused", [
+        {
+          name: "down",
+          displayName: "Unreachable OpenAPI",
+          // 端口 9 没有服务；配了 skip 就不应访问它。
+          source: { url: "http://127.0.0.1:9/openapi.json" },
+          skip: "backend is down",
+        },
+        {
+          name: "stale",
+          displayName: "Previously downloaded OpenAPI",
+          source: { url: "http://127.0.0.1:9/openapi.json" },
+          skip: "backend is down",
+        },
+        { name: "local", displayName: "Local OpenAPI", source: { file: "fixtures/local.json" } },
+      ]),
+    );
+    // stale 以前下载过：本地缓存要原样保留，并提示没有更新。
+    await mkdir(join(root, "swagger-cache/demo"), { recursive: true });
+    await writeFile(join(root, "swagger-cache/demo/stale.json"), '{"old":true}', "utf8");
+    const result = spawnSync(process.execPath, [fetchCliPath], spawnOptions);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stdout, /\[skip\] demo\/down — backend is down（本地没有文档/);
+    assert.match(
+      result.stdout,
+      /\[skip\] demo\/stale — backend is down（保留本地已有文档，没有更新/,
+    );
+    assert.match(result.stdout, /1\/1 成功，2 个跳过/);
+    assert.equal(
+      await readFile(join(root, "swagger-cache/demo/stale.json"), "utf8"),
+      '{"old":true}',
+    );
+
+    await writeConfig(
+      root,
+      config("online", "unused", [
+        {
+          name: "local",
+          displayName: "Local OpenAPI",
+          source: { file: "fixtures/local.json" },
+          skip: "",
+        },
+      ]),
+    );
+    const empty = spawnSync(process.execPath, [fetchCliPath], spawnOptions);
+    assert.equal(empty.status, 1);
+    assert.match(empty.stderr, /services\[0\]\.skip/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("fetch CLI rejects missing, empty, and unknown --only values", async () => {
   const root = await mkdtemp(join(tmpdir(), "xapiforge-fetch-only-"));
   const spawnOptions = { cwd: root, encoding: "utf8" };

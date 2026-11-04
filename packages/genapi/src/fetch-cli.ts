@@ -404,8 +404,23 @@ async function main(): Promise<void> {
   );
 
   const results: SourceResult[] = [];
+  let skipped = 0;
   for (const project of projects) {
     for (const service of project.services) {
+      // 配了 skip：不访问来源、不动本地已有文档，也不算失败。本地有文档时生成侧继续用它，所以提示它没被更新。
+      if (service.skip !== undefined) {
+        const localPath = resolveSwaggerInputPath({
+          configDirectory: cwd,
+          swaggerRoot,
+          projectId: project.name,
+          service,
+        });
+        console.log(
+          `  [skip] ${project.name}/${service.name} — ${service.skip}（${existsSync(localPath) ? "保留本地已有文档，没有更新，可能不是最新" : "本地没有文档，生成时不包含它"}）`,
+        );
+        skipped += 1;
+        continue;
+      }
       results.push(
         isSwaggerFileSource(service.source)
           ? await processFileSource({ cwd, swaggerRoot, project, service, maxBytes })
@@ -425,7 +440,7 @@ async function main(): Promise<void> {
   const failures = results.filter((result) => !result.ok);
   const totalBytes = results.reduce((sum, result) => sum + (result.bytes ?? 0), 0);
   console.log(
-    `\n${failures.length === 0 ? "✓" : "✗"} 完成：${results.length - failures.length}/${results.length} 成功，${formatBytes(totalBytes)}`,
+    `\n${failures.length === 0 ? "✓" : "✗"} 完成：${results.length - failures.length}/${results.length} 成功${skipped > 0 ? `，${skipped} 个跳过` : ""}，${formatBytes(totalBytes)}`,
   );
   if (failures.length > 0) {
     for (const failure of failures) {

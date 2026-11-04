@@ -203,6 +203,14 @@ async function main(): Promise<void> {
     if (result.changedFiles.length > 0) {
       for (const file of result.changedFiles) console.log(`  - ${file}`);
     }
+    // 配了 skip 的 service 每次都列出来：用的是本地旧文档（可能过期），或者根本不在产物里，两种都不能悄悄发生。
+    for (const service of project.services) {
+      if (service.skip === undefined) continue;
+      const used = result.serviceNames.includes(service.name);
+      console.log(
+        `  [skip] ${service.name} — ${service.skip}（${used ? "用本地已有文档生成，没有更新，可能不是最新" : "本地没有文档，不生成"}）`,
+      );
+    }
     totalFiles += result.filesWritten;
     totalEndpoints += result.totalEndpoints;
     if (cli.check && result.changed) process.exitCode = 1;

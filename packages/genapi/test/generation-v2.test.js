@@ -1767,6 +1767,38 @@ void stable;
   });
 });
 
+test("skipped services generate from an existing local document and are omitted otherwise", async () => {
+  await withTempProject(async (root) => {
+    const schemas = { "Shared.ItemDto": { type: "object" } };
+    await writeSwagger(root, "kept", document({ schemas }));
+    await writeSwagger(root, "stale", document({ schemas }));
+    const services = [
+      service("kept"),
+      service("stale", { skip: "backend is down" }),
+      service("missing", { skip: "never downloaded" }),
+    ];
+    const result = await generate({
+      xapiForgeConfig: config(services),
+      projectId: "demo",
+      swaggerDir: "swagger",
+      outputDir: "generated",
+    });
+    assert.deepEqual([...result.serviceNames].sort(), ["kept", "stale"]);
+    assert.equal(existsSync(join(root, "generated/demo/types/stale.ts")), true);
+    assert.equal(existsSync(join(root, "generated/demo/types/missing.ts")), false);
+
+    await assert.rejects(
+      generate({
+        xapiForgeConfig: config([service("missing", { skip: "never downloaded" })]),
+        projectId: "demo",
+        swaggerDir: "swagger",
+        outputDir: "generated",
+      }),
+      /全部配置了 skip 且本地都没有文档/,
+    );
+  });
+});
+
 test("all alias collisions are reported in one error with a suggested aliases config", async () => {
   await withTempProject(async (root) => {
     await writeSwagger(
