@@ -4,6 +4,12 @@ All notable changes to xapiforge are documented here.
 
 ## Unreleased
 
+## 0.2.0-alpha.4 - 2026-11-03
+
+### Added
+
+- **genapi**: service 新增 skip 配置，显式跳过下载；本地已有文档时继续用它生成 (31cf6bf)
+
 ## 0.2.0-alpha.3 - 2026-11-03
 
 ### Added
